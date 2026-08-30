@@ -118,8 +118,6 @@
     const PRODUCT_ID = 0x06c1;
 
     let device = null;
-    let epIn = 1;
-    let epOut = 2;
     let isReading = false;
     let lentGames = JSON.parse(localStorage.getItem('lentGames')) || [];
 
@@ -136,7 +134,7 @@
 
     const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-    // パケット構築（Sony RC-S380標準フレーム）
+    // パケット構築
     function buildCmd(cmd) {
       const len = cmd.length;
       let sum = 0;
@@ -152,14 +150,48 @@
       return pkt;
     }
 
-    async function sendRaw(bytes) {
+    // タイムアウト付き送信関数（Bulk転送／Control転送の両対応フォールバック）
+    async function sendCommand(cmdData) {
       if (!device || !device.opened) return null;
+
+      const pkt = buildCmd(cmdData);
+
+      // 1. まずBulk転送をタイムアウト付きで試行
       try {
-        await device.transferOut(epOut, bytes);
-        const res = await device.transferIn(epIn, 64);
-        return new Uint8Array(res.data.buffer);
+        const transferPromise = (async () => {
+          await device.transferOut(2, pkt);
+          const res = await device.transferIn(1, 64);
+          return new Uint8Array(res.data.buffer);
+        })();
+
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error("BulkTimeout")), 300)
+        );
+
+        return await Promise.race([transferPromise, timeoutPromise]);
       } catch (e) {
-        return null;
+        // Bulk転送がタイムアウトまたは失敗した場合、Control転送を試行
+        try {
+          await device.controlTransferOut({
+            requestType: 'vendor',
+            recipient: 'device',
+            request: 0x00,
+            value: 0x0000,
+            index: 0x0000
+          }, pkt);
+
+          const res = await device.controlTransferIn({
+            requestType: 'vendor',
+            recipient: 'device',
+            request: 0x01,
+            value: 0x0000,
+            index: 0x0000
+          }, 64);
+
+          return new Uint8Array(res.data.buffer);
+        } catch (ctrlErr) {
+          return null;
+        }
       }
     }
 
@@ -174,29 +206,23 @@
         await device.selectConfiguration(1);
         await device.claimInterface(0);
 
-        // エンドポイント判定
-        const endpoints = device.configuration.interfaces[0].alternate.endpoints;
-        endpoints.forEach(ep => {
-          if (ep.direction === "in") epIn = ep.endpointNumber;
-          if (ep.direction === "out") epOut = ep.endpointNumber;
-        });
-        log(`端子確定: In=${epIn}, Out=${epOut}`);
-
+        log("USBアクセス確保。初期化試行中...");
         statusEl.textContent = "初期化中...";
 
-        // 1. ACK送信でデバイスの状態リセット
-        await sendRaw(new Uint8Array([0x00, 0x00, 0xff, 0x00, 0xff, 0x00]));
-        await sleep(100);
+        // 1. Reset (0xd6, 0x00)
+        let r1 = await sendCommand(new Uint8Array([0xd6, 0x00]));
+        log("Reset: " + (r1 ? "OK (" + r1.length + "B)" : "応答なし(次へ)"));
+        await sleep(50);
 
-        // 2. High Speed Command Type 設定 (0x00, 0x18)
-        let r1 = await sendRaw(buildCmd(new Uint8Array([0xd6, 0x02, 0x00, 0x18])));
-        log("SetCmd: " + (r1 ? Array.from(r1).map(b => b.toString(16).padStart(2,'0')).join(' ') : "無応答"));
-        await sleep(100);
+        // 2. Set Command Type (0xd6, 0x02, 0x00, 0x18)
+        let r2 = await sendCommand(new Uint8Array([0xd6, 0x02, 0x00, 0x18]));
+        log("SetCmd: " + (r2 ? "OK" : "応答なし"));
+        await sleep(50);
 
-        // 3. RF電波 ON
-        let r2 = await sendRaw(buildCmd(new Uint8Array([0xd6, 0x06, 0x01])));
-        log("CarrierON: " + (r2 ? Array.from(r2).map(b => b.toString(16).padStart(2,'0')).join(' ') : "無応答"));
-        await sleep(100);
+        // 3. Carrier ON (0xd6, 0x06, 0x01)
+        let r3 = await sendCommand(new Uint8Array([0xd6, 0x06, 0x01]));
+        log("CarrierON: " + (r3 ? "OK" : "応答なし"));
+        await sleep(50);
 
         statusEl.textContent = "🟢 タグ/カードをかざしてください";
         statusEl.style.color = "var(--success)";
@@ -217,21 +243,17 @@
       let lastTime = 0;
 
       while (isReading && device && device.opened) {
-        // FeliCa Polling コマンド
-        const cmd = buildCmd(new Uint8Array([0xd6, 0x20, 0x01, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00]));
-        const res = await sendRaw(cmd);
+        // FeliCa Polling
+        const res = await sendCommand(new Uint8Array([0xd6, 0x20, 0x01, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00]));
 
         if (res && res.length >= 15) {
-          // レスポンスの16進数文字列化
           const hex = Array.from(res).map(b => b.toString(16).padStart(2,'0')).join('');
           
-          // FeliCa応答マーク (d7 21 または d7) の検出
-          if (hex.includes("d721") || hex.includes("d720")) {
-            // IDm抽出 (11バイト目以降)
+          if (hex.includes("d721") || hex.includes("d720") || hex.includes("d7")) {
             const idm = Array.from(res.slice(11, 19))
               .map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
 
-            if (idm && idm !== "0000000000000000") {
+            if (idm && idm !== "0000000000000000" && idm.length === 16) {
               const now = Date.now();
               if (idm !== lastTag || (now - lastTime > 2000)) {
                 lastTag = idm;
@@ -243,7 +265,7 @@
           }
         }
 
-        await sleep(150);
+        await sleep(200);
       }
     }
 
