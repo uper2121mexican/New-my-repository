@@ -3,315 +3,198 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ゲーム貸出管理 System</title>
+  <title>ゲーム貸出システム</title>
   <style>
-    :root {
-      --bg: #f2f2f7;
-      --card: #ffffff;
-      --primary: #007aff;
-      --success: #34c759;
-      --danger: #ff3b30;
-      --text: #1c1c1e;
-      --sub: #8e8e93;
-      --border: #e5e5ea;
-    }
-
-    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, sans-serif; }
-    body { background: var(--bg); color: var(--text); padding: 16px; max-width: 480px; margin: 0 auto; }
-
-    h1 { font-size: 1.2rem; text-align: center; margin-bottom: 16px; font-weight: 700; }
-
-    .card {
-      background: var(--card);
-      border-radius: 12px;
-      padding: 16px;
-      margin-bottom: 12px;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-    }
-
-    .btn {
-      width: 100%;
-      padding: 14px;
-      background: var(--primary);
-      color: white;
-      border: none;
-      border-radius: 10px;
-      font-weight: bold;
-      font-size: 1rem;
-      cursor: pointer;
-    }
-    .btn:disabled { background: var(--sub); cursor: not-allowed; }
-
-    .status-box {
-      margin-top: 12px;
-      text-align: center;
-      font-size: 0.9rem;
-      font-weight: 600;
-      color: var(--sub);
-    }
-
-    .list-header {
-      display: flex;
-      justify-content: space-between;
-      font-weight: bold;
-      padding-bottom: 8px;
-      border-bottom: 1px solid var(--border);
-      margin-bottom: 8px;
-    }
-
-    .item {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 10px 0;
-      border-bottom: 1px solid var(--border);
-    }
-
-    .btn-del {
-      background: var(--danger);
-      color: white;
-      border: none;
-      padding: 6px 12px;
-      font-size: 0.8rem;
-      border-radius: 6px;
-      cursor: pointer;
-    }
-
-    .log-box {
-      background: #1e1e1e;
-      color: #00ff66;
-      font-family: monospace;
-      font-size: 0.75rem;
-      padding: 10px;
-      border-radius: 8px;
-      height: 140px;
-      overflow-y: auto;
-      white-space: pre-wrap;
-      word-break: break-all;
-    }
+    :root { --bg: #f8f9fa; --primary: #0d6efd; --danger: #dc3545; --success: #198754; --text: #212529; }
+    body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); max-width: 500px; margin: 0 auto; padding: 20px; }
+    .card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); margin-bottom: 20px; }
+    button { width: 100%; padding: 15px; font-size: 16px; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; transition: 0.2s; }
+    .btn-connect { background: var(--primary); color: white; }
+    .btn-connect:disabled { background: #6c757d; cursor: not-allowed; }
+    .status { text-align: center; margin-top: 15px; font-weight: bold; }
+    .list-item { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; border-bottom: 1px solid #dee2e6; }
+    .btn-return { background: var(--danger); color: white; width: auto; padding: 8px 16px; font-size: 14px; }
+    .log-window { background: #212529; color: #20c997; font-family: monospace; font-size: 12px; padding: 12px; border-radius: 8px; height: 150px; overflow-y: auto; white-space: pre-wrap; }
   </style>
 </head>
 <body>
 
-  <h1>🎮 ゲーム貸出管理</h1>
+  <h2 style="text-align: center;">🎮 ゲーム貸出システム</h2>
 
   <div class="card">
-    <button id="connectBtn" class="btn">PaSoRi (RC-S380) を接続</button>
-    <div id="status" class="status-box">リーダー未接続</div>
+    <button id="btnConnect" class="btn-connect">リーダーを接続する</button>
+    <div id="statusText" class="status" style="color: #6c757d;">待機中...</div>
   </div>
 
   <div class="card">
-    <div class="list-header">
-      <span>貸出中アイテム</span>
-      <span id="count">0件</span>
-    </div>
-    <div id="gameList"></div>
+    <h3 style="margin-top: 0; border-bottom: 2px solid #dee2e6; padding-bottom: 10px;">貸出中 (<span id="count">0</span>件)</h3>
+    <div id="lendList"></div>
   </div>
 
   <div class="card">
-    <div style="font-size: 0.8rem; color: var(--sub); margin-bottom: 4px;">通信ログ</div>
-    <div id="log" class="log-box">待機中...</div>
+    <div class="log-window" id="logBox">システム起動完了。</div>
   </div>
 
   <script>
-    const VENDOR_ID = 0x054c;
-    const PRODUCT_ID = 0x06c1;
-
-    let device = null;
-    let epIn = null;
-    let epOut = null;
-    let isReading = false;
-    let lentGames = JSON.parse(localStorage.getItem('lentGames')) || [];
-
-    const connectBtn = document.getElementById('connectBtn');
-    const statusEl = document.getElementById('status');
-    const gameListEl = document.getElementById('gameList');
-    const countEl = document.getElementById('count');
-    const logEl = document.getElementById('log');
-
-    function log(msg) {
-      const now = new Date().toLocaleTimeString();
-      logEl.textContent = `[${now}] ${msg}\n` + logEl.textContent;
-    }
-
-    // パケット構築（チェックサム計算）
-    function buildPacket(cmd) {
-      const len = cmd.length;
-      let sum = 0;
-      for (let i = 0; i < len; i++) sum += cmd[i];
-      const dcs = (256 - (sum & 0xff)) & 0xff;
-
-      const pkt = new Uint8Array(6 + len + 2);
-      pkt[0] = 0x00; pkt[1] = 0x00; pkt[2] = 0xff;
-      pkt[3] = len; pkt[4] = (256 - len) & 0xff;
-      pkt.set(cmd, 5);
-      pkt[5 + len] = dcs;
-      pkt[5 + len + 1] = 0x00;
-      return pkt;
-    }
-
-    // 2段階読み取り対応の通信関数
-    async function communicate(cmd, timeoutMs = 500) {
-      if (!device || !epIn || !epOut) return null;
-      try {
-        const pkt = buildPacket(cmd);
-        await device.transferOut(epOut, pkt);
-
-        // 1回目の受信（ACKまたは応答データ）
-        let res1 = await Promise.race([
-          device.transferIn(epIn, 64),
-          new Promise((_, r) => setTimeout(() => r(new Error("Timeout")), timeoutMs))
-        ]);
-        let data1 = new Uint8Array(res1.data.buffer);
-
-        // もし受信したのがACK（00 00 ff 00 ff 00）なら、もう一度受信して本データを取得
-        if (data1.length === 6 && data1[0] === 0x00 && data1[2] === 0xff) {
-          let res2 = await Promise.race([
-            device.transferIn(epIn, 64),
-            new Promise((_, r) => setTimeout(() => r(new Error("Timeout")), timeoutMs))
-          ]);
-          return new Uint8Array(res2.data.buffer);
+    // --- 1. アプリケーション状態管理 ---
+    const AppState = {
+      items: JSON.parse(localStorage.getItem('lendItems')) || [],
+      save() { localStorage.setItem('lendItems', JSON.stringify(this.items)); },
+      toggleItem(id) {
+        const index = this.items.findIndex(i => i.id === id);
+        if (index >= 0) {
+          this.items.splice(index, 1);
+          UI.log(`[返却] ID: ${id}`);
+        } else {
+          this.items.push({ id, date: new Date().toLocaleString() });
+          UI.log(`[貸出] ID: ${id}`);
         }
-
-        // 1回目で一気にデータが届いた場合はそのまま返す
-        return data1;
-      } catch (e) {
-        return null;
+        this.save();
+        UI.renderList();
       }
-    }
+    };
 
-    connectBtn.addEventListener('click', async () => {
-      try {
-        log("=== 接続開始 ===");
-        device = await navigator.usb.requestDevice({
-          filters: [{ vendorId: VENDOR_ID, productId: PRODUCT_ID }]
+    // --- 2. UI制御 ---
+    const UI = {
+      log(msg) {
+        const box = document.getElementById('logBox');
+        const time = new Date().toLocaleTimeString();
+        box.textContent = `[${time}] ${msg}\n` + box.textContent;
+      },
+      setStatus(msg, color) {
+        const el = document.getElementById('statusText');
+        el.textContent = msg;
+        el.style.color = color;
+      },
+      renderList() {
+        const listEl = document.getElementById('lendList');
+        document.getElementById('count').textContent = AppState.items.length;
+        listEl.innerHTML = AppState.items.length === 0 
+          ? '<div style="text-align:center; color:#6c757d; margin-top:20px;">貸出中のアイテムはありません</div>'
+          : '';
+        
+        AppState.items.forEach(item => {
+          const div = document.createElement('div');
+          div.className = 'list-item';
+          div.innerHTML = `
+            <div>
+              <strong>ID: ${item.id}</strong><br>
+              <small style="color:#6c757d;">${item.date}</small>
+            </div>
+            <button class="btn-return" onclick="AppState.toggleItem('${item.id}')">返却</button>
+          `;
+          listEl.appendChild(div);
         });
+      }
+    };
 
-        await device.open();
-        await device.selectConfiguration(1);
-        await device.claimInterface(0);
+    // --- 3. PaSoRi ハードウェア制御クラス ---
+    class PasoriReader {
+      constructor() {
+        this.device = null;
+        this.epIn = 1;
+        this.epOut = 2;
+        this.lastId = '';
+        this.lastReadTime = 0;
+      }
 
-        // エンドポイント自動判定
-        const endpoints = device.configuration.interfaces[0].alternate.endpoints;
-        endpoints.forEach(ep => {
-          if (ep.direction === 'in') epIn = ep.endpointNumber;
-          if (ep.direction === 'out') epOut = ep.endpointNumber;
-        });
-        log(`端子確定: In=${epIn}, Out=${epOut}`);
+      buildPacket(cmdData) {
+        const len = cmdData.length;
+        let sum = 0;
+        for (let i = 0; i < len; i++) sum += cmdData[i];
+        
+        const pkt = new Uint8Array(6 + len + 2);
+        pkt[0] = 0x00; pkt[1] = 0x00; pkt[2] = 0xff;
+        pkt[3] = len; pkt[4] = (256 - len) & 0xff;
+        pkt.set(cmdData, 5);
+        pkt[5 + len] = (256 - (sum & 0xff)) & 0xff;
+        pkt[6 + len] = 0x00;
+        return pkt;
+      }
 
-        statusEl.textContent = "初期化中...";
-
-        // 通信の詰まりを解消するための空打ち(ダミーACK送信)
+      async sendCommand(cmd, name) {
         try {
-          await device.transferOut(epOut, new Uint8Array([0x00, 0x00, 0xff, 0x00, 0xff, 0x00]));
-          await Promise.race([ device.transferIn(epIn, 64), new Promise(r => setTimeout(r, 100)) ]);
-        } catch(e) {}
-
-        // 1. Reset
-        let r1 = await communicate(new Uint8Array([0xd6, 0x00]));
-        log("Reset: " + (r1 ? "成功" : "失敗"));
-
-        // 2. Set Command Type
-        let r2 = await communicate(new Uint8Array([0xd6, 0x02, 0x00, 0x18]));
-        log("SetCmd: " + (r2 ? "成功" : "失敗"));
-
-        // 3. Carrier ON
-        let r3 = await communicate(new Uint8Array([0xd6, 0x06, 0x00]));
-        log("CarrierON: " + (r3 ? "成功" : "失敗"));
-
-        if (!r1 && !r2 && !r3) {
-          throw new Error("PaSoRiからの応答がありません。");
+          await this.device.transferOut(this.epOut, this.buildPacket(cmd));
+          
+          // 応答を待機（ACK または データ本体）
+          let res = await this.device.transferIn(this.epIn, 64);
+          let data = new Uint8Array(res.data.buffer);
+          
+          // ACK(00 00 ff 00 ff 00) の場合は本データを受信し直す
+          if (data.length === 6 && data[2] === 0xff) {
+            res = await this.device.transferIn(this.epIn, 64);
+            data = new Uint8Array(res.data.buffer);
+          }
+          UI.log(`CMD(${name}): OK`);
+          return data;
+        } catch (e) {
+          UI.log(`CMD(${name}): 失敗 (${e.message})`);
+          return null;
         }
-
-        statusEl.textContent = "🟢 カードをかざしてください";
-        statusEl.style.color = "var(--success)";
-        connectBtn.disabled = true;
-
-        isReading = true;
-        startPolling();
-
-      } catch (err) {
-        log("エラー: " + err.message);
-        statusEl.textContent = "エラー: " + err.message;
-        statusEl.style.color = "var(--danger)";
       }
-    });
 
-    async function startPolling() {
-      let lastTag = "";
-      let lastTime = 0;
+      async connect() {
+        try {
+          UI.log("デバイス選択の待機中...");
+          this.device = await navigator.usb.requestDevice({ filters: [{ vendorId: 0x054c, productId: 0x06c1 }] });
+          await this.device.open();
+          await this.device.selectConfiguration(1);
+          await this.device.claimInterface(0);
 
-      while (isReading && device && device.opened) {
-        // FeliCa Polling
-        const res = await communicate(new Uint8Array([0xd6, 0x20, 0x01, 0x00, 0x00, 0xff, 0xff, 0x01, 0x00]), 200);
+          // エンドポイント走査
+          for (let ep of this.device.configuration.interfaces[0].alternate.endpoints) {
+            if (ep.direction === 'in') this.epIn = ep.endpointNumber;
+            if (ep.direction === 'out') this.epOut = ep.endpointNumber;
+          }
+          
+          UI.setStatus("PaSoRiの初期化中...", "var(--primary)");
 
-        // データが届き、ペイロードの先頭(5バイト目)が d7 なら成功
-        if (res && res.length > 10 && res[5] === 0xd7) {
-          // IDmは11バイト目から8バイト分
-          const idm = Array.from(res.slice(11, 19))
-            .map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+          // ダミーパケットで通信の詰まりをリセット
+          try { await this.device.transferOut(this.epOut, new Uint8Array([0x00,0x00,0xff,0x00,0xff,0x00])); } catch(e){}
 
-          if (idm && idm !== "0000000000000000") {
+          // 初期化シーケンス
+          const r1 = await this.sendCommand([0xd6, 0x00], "Reset");
+          if (!r1) throw new Error("OSにブロックされています(Zadigが必要です)");
+          
+          await this.sendCommand([0xd6, 0x02, 0x00, 0x18], "SetCmdType");
+          await this.sendCommand([0xd6, 0x06, 0x00], "CarrierON");
+
+          UI.setStatus("🟢 カードをかざしてください", "var(--success)");
+          document.getElementById('btnConnect').disabled = true;
+          this.poll();
+
+        } catch (e) {
+          UI.log("エラー: " + e.message);
+          UI.setStatus("接続失敗: " + e.message, "var(--danger)");
+        }
+      }
+
+      async poll() {
+        while (this.device && this.device.opened) {
+          // FeliCa Polling
+          const res = await this.sendCommand([0xd6, 0x20, 0x01, 0x00, 0x00, 0xff, 0xff, 0x01, 0x00], "Poll");
+          
+          if (res && res.length > 18 && res[5] === 0xd7) {
+            const idm = Array.from(res.slice(11, 19)).map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+            
             const now = Date.now();
-            if (idm !== lastTag || (now - lastTime > 2000)) {
-              lastTag = idm;
-              lastTime = now;
-              log("★ カード検出: " + idm);
-              processCard(idm);
+            if (idm !== "0000000000000000" && (idm !== this.lastId || now - this.lastReadTime > 2000)) {
+              this.lastId = idm;
+              this.lastReadTime = now;
+              AppState.toggleItem(idm);
             }
           }
+          // 次の読み取りまで少し待機
+          await new Promise(r => setTimeout(r, 250));
         }
-        await new Promise(r => setTimeout(r, 200));
       }
     }
 
-    function processCard(id) {
-      const idx = lentGames.findIndex(g => g.id === id);
-      if (idx >= 0) {
-        lentGames.splice(idx, 1);
-        statusEl.textContent = `【返却】 ID: ${id}`;
-        statusEl.style.color = "var(--primary)";
-      } else {
-        lentGames.push({ id: id, title: `カード (ID:${id})` });
-        statusEl.textContent = `【貸出】 ID: ${id}`;
-        statusEl.style.color = "var(--success)";
-      }
-      saveAndRender();
-    }
+    // --- 4. 起動処理 ---
+    UI.renderList();
+    const reader = new PasoriReader();
+    document.getElementById('btnConnect').addEventListener('click', () => reader.connect());
 
-    function saveAndRender() {
-      localStorage.setItem('lentGames', JSON.stringify(lentGames));
-      renderList();
-    }
-
-    function renderList() {
-      gameListEl.innerHTML = '';
-      if (lentGames.length === 0) {
-        gameListEl.innerHTML = '<div style="text-align:center; color:var(--sub); padding:12px; font-size:0.85rem;">貸出中のアイテムはありません</div>';
-      } else {
-        lentGames.forEach((item, index) => {
-          const div = document.createElement('div');
-          div.className = 'item';
-          div.innerHTML = `
-            <span>${escapeHtml(item.title)}</span>
-            <button class="btn-del" onclick="removeItem(${index})">返却</button>
-          `;
-          gameListEl.appendChild(div);
-        });
-      }
-      countEl.textContent = `${lentGames.length}件`;
-    }
-
-    function removeItem(index) {
-      lentGames.splice(index, 1);
-      saveAndRender();
-    }
-
-    function escapeHtml(str) {
-      return str.replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[m]);
-    }
-
-    renderList();
   </script>
 </body>
 </html>
