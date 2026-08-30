@@ -16,7 +16,7 @@
       --border: #e5e5ea;
     }
 
-    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, sans-serif; }
     body { background: var(--bg); color: var(--text); padding: 16px; max-width: 480px; margin: 0 auto; }
 
     h1 { font-size: 1.2rem; text-align: center; margin-bottom: 16px; font-weight: 700; }
@@ -39,9 +39,7 @@
       font-weight: bold;
       font-size: 1rem;
       cursor: pointer;
-      transition: background 0.2s;
     }
-    .btn:active { opacity: 0.8; }
     .btn:disabled { background: var(--sub); cursor: not-allowed; }
 
     .status-box {
@@ -59,7 +57,6 @@
       padding-bottom: 8px;
       border-bottom: 1px solid var(--border);
       margin-bottom: 8px;
-      font-size: 0.95rem;
     }
 
     .item {
@@ -69,7 +66,6 @@
       padding: 10px 0;
       border-bottom: 1px solid var(--border);
     }
-    .item:last-child { border-bottom: none; }
 
     .btn-del {
       background: var(--danger);
@@ -81,7 +77,6 @@
       cursor: pointer;
     }
 
-    /* デバッグログ用表示エリア */
     .log-box {
       background: #1e1e1e;
       color: #00ff66;
@@ -89,7 +84,7 @@
       font-size: 0.75rem;
       padding: 10px;
       border-radius: 8px;
-      height: 100px;
+      height: 120px;
       overflow-y: auto;
       white-space: pre-wrap;
       word-break: break-all;
@@ -114,7 +109,7 @@
   </div>
 
   <div class="card">
-    <div style="font-size: 0.8rem; color: var(--sub); margin-bottom: 4px;">通信ログ（デバッグ用）</div>
+    <div style="font-size: 0.8rem; color: var(--sub); margin-bottom: 4px;">通信ログ</div>
     <div id="log" class="log-box">待機中...</div>
   </div>
 
@@ -139,7 +134,6 @@
 
     const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-    // パケット構築
     function makePacket(command) {
       const len = command.length;
       let sum = 0;
@@ -155,8 +149,7 @@
       return pkt;
     }
 
-    // パケット送受信
-    async function communicate(cmd, timeout = 1000) {
+    async function communicate(cmd, timeout = 500) {
       if (!device || !device.opened) return null;
       try {
         await device.transferOut(2, makePacket(cmd));
@@ -167,7 +160,6 @@
         let res = await Promise.race([read, timer]);
         let data = new Uint8Array(res.data.buffer);
 
-        // ACK判定(6byte)の場合、本体応答を追加受信
         if (data.length === 6 && data[2] === 0xff && data[3] === 0x00) {
           res = await Promise.race([device.transferIn(1, 64), timer]);
           data = new Uint8Array(res.data.buffer);
@@ -178,37 +170,43 @@
       }
     }
 
-    // 接続イベント
     connectBtn.addEventListener('click', async () => {
       try {
-        log("接続リクエスト開始...");
+        log("接続開始...");
         device = await navigator.usb.requestDevice({
           filters: [{ vendorId: VENDOR_ID, productId: PRODUCT_ID }]
         });
 
         await device.open();
-        log("USBオープン完了");
         await device.selectConfiguration(1);
         await device.claimInterface(0);
-        log("インターフェース確保完了");
+        log("USBデバイス確保完了");
 
-        statusEl.textContent = "初期化中...";
-        
-        // シーケンス実行
-        await communicate(new Uint8Array([0xd6, 0x00])); // Reset
-        await sleep(50);
-        await communicate(new Uint8Array([0xd6, 0x02, 0x00, 0x18])); // SetCommandType
-        await sleep(50);
-        await communicate(new Uint8Array([0xd6, 0x08, 0x01, 0x00])); // SetRF
-        await sleep(50);
-        await communicate(new Uint8Array([0xd6, 0x06, 0x01])); // Carrier ON
-        await sleep(50);
+        statusEl.textContent = "ウェイクアップコマンド送信中...";
 
-        log("初期化成功。ポーリングを開始します。");
-        statusEl.textContent = "🟢 タグ/カードをかざしてください";
+        // --- RC-S380 強制アクティベートシーケンス ---
+        // ACKリセット
+        await device.transferOut(2, new Uint8Array([0x00, 0x00, 0xff, 0x00, 0xff, 0x00]));
+        await sleep(100);
+
+        // 1. Reset
+        let r1 = await communicate(new Uint8Array([0xd6, 0x00]));
+        log("Reset応答: " + (r1 ? r1.length + "bytes" : "無応答"));
+        await sleep(100);
+
+        // 2. SetCommandType (0x01: Transparent / 0x18)
+        let r2 = await communicate(new Uint8Array([0xd6, 0x02, 0x00, 0x18]));
+        log("SetCmdType応答: " + (r2 ? r2.length + "bytes" : "無応答"));
+        await sleep(100);
+
+        // 3. Carrier ON (電波出力)
+        let r3 = await communicate(new Uint8Array([0xd6, 0x06, 0x01]));
+        log("CarrierON応答: " + (r3 ? r3.length + "bytes" : "無応答"));
+        await sleep(100);
+
+        statusEl.textContent = "🟢 ポーリング実行中（カードをかざしてください）";
         statusEl.style.color = "var(--success)";
         connectBtn.disabled = true;
-        connectBtn.textContent = "接続中";
 
         isReading = true;
         startPolling();
@@ -220,50 +218,33 @@
       }
     });
 
-    // メイン読み取りループ
     async function startPolling() {
       let lastTag = "";
       let lastTime = 0;
+      let loopCount = 0;
 
       while (isReading && device && device.opened) {
-        let tagFound = false;
-
-        // 1. FeliCa 検索 (Suica, PASMO, 交通系IC, マイナカード)
-        const felicaPkt = new Uint8Array([0xd6, 0x20, 0x01, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00]);
-        const fRes = await communicate(felicaPkt, 300);
-
-        if (fRes && fRes.length >= 19 && fRes[5] === 0xd7 && fRes[7] === 0x00) {
-          const idm = Array.from(fRes.slice(11, 19))
-            .map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
-
-          tagFound = true;
-          const now = Date.now();
-          if (idm !== lastTag || (now - lastTime > 2500)) {
-            lastTag = idm;
-            lastTime = now;
-            log("FeliCa検出: " + idm);
-            processCard(idm);
-          }
+        loopCount++;
+        if (loopCount % 20 === 0) {
+          log("スキャンループ動作中..."); // 生存確認ログ
         }
 
-        // 2. MIFARE / NTAG 検索 ( Type-A )
-        if (!tagFound) {
-          const mifarePkt = new Uint8Array([0xd6, 0x4a, 0x01, 0x00]);
-          const mRes = await communicate(mifarePkt, 300);
+        // FeliCa Polling
+        const felicaPkt = new Uint8Array([0xd6, 0x20, 0x01, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00]);
+        const fRes = await communicate(felicaPkt, 250);
 
-          if (mRes && mRes.length >= 11 && mRes[5] === 0xd7 && mRes[7] === 0x00) {
-            const len = mRes[10];
-            if (mRes.length >= 11 + len) {
-              const uid = Array.from(mRes.slice(11, 11 + len))
-                .map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+        if (fRes) {
+          // 応答があればログを出力して解析
+          if (fRes.length >= 19 && fRes[5] === 0xd7) {
+            const idm = Array.from(fRes.slice(11, 19))
+              .map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
 
-              const now = Date.now();
-              if (uid !== lastTag || (now - lastTime > 2500)) {
-                lastTag = uid;
-                lastTime = now;
-                log("NTAG/MIFARE検出: " + uid);
-                processCard(uid);
-              }
+            const now = Date.now();
+            if (idm !== lastTag || (now - lastTime > 2000)) {
+              lastTag = idm;
+              lastTime = now;
+              log("★ FeliCa検出: " + idm);
+              processCard(idm);
             }
           }
         }
@@ -272,22 +253,15 @@
       }
     }
 
-    // トグル処理（貸出 / 返却）
     function processCard(id) {
       const idx = lentGames.findIndex(g => g.id === id);
-
       if (idx >= 0) {
-        // 返却
         lentGames.splice(idx, 1);
         statusEl.textContent = `【返却】 ID: ${id}`;
-        statusEl.style.color = "var(--primary)";
       } else {
-        // 貸出
         lentGames.push({ id: id, title: `カード (ID:${id})` });
         statusEl.textContent = `【貸出】 ID: ${id}`;
-        statusEl.style.color = "var(--success)";
       }
-
       saveAndRender();
     }
 
