@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RC-S380 貸出管理</title>
+  <style>
+    body { font-family: sans-serif; padding: 16px; max-width: 500px; margin: 0 auto; background: #f4f6f8; }
+    .card { background: white; padding: 16px; border-radius: 12px; margin-bottom: 16px; box-shadow: 0 2px 6px rgba(0,0,0,0.1); }
+    .btn { width: 100%; padding: 12px; background: #007aff; color: white; border: none; border-radius: 8px; font-weight: bold; font-size: 1rem; }
+    .status { margin-top: 10px; text-align: center; color: #666; font-size: 0.9rem; }
+    .item { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #eee; }
+  </style>
+</head>
+<body>
+
+  <h2>🎮 ゲーム貸出管理 (RC-S380対応)</h2>
+
+  <div class="card">
+    <button id="connectBtn" class="btn">PaSoRi (RC-S380) を接続</button>
+    <div id="status" class="status">ボタンを押してRC-S380を選択してください</div>
+  </div>
+
+  <div class="card">
+    <h3>貸出中リスト (<span id="count">0</span>本)</h3>
+    <div id="gameList"></div>
+  </div>
+
+  <script>
+    const connectBtn = document.getElementById('connectBtn');
+    const statusEl = document.getElementById('status');
+    const gameListEl = document.getElementById('gameList');
+    const countEl = document.getElementById('count');
+
+    let lentGames = JSON.parse(localStorage.getItem('lentGames')) || [];
+    let device = null;
+
+    // SONY RC-S380 の USB ID
+    const VENDOR_ID = 0x054c; // SONY
+    const PRODUCT_ID = 0x06c1; // RC-S380
+
+    connectBtn.addEventListener('click', async () => {
+      try {
+        device = await navigator.usb.requestDevice({
+          filters: [{ vendorId: VENDOR_ID, productId: PRODUCT_ID }]
+        });
+
+        await device.open();
+        await device.selectConfiguration(1);
+        await device.claimInterface(0);
+
+        statusEl.textContent = "RC-S380が接続されました。タグをかざしてください。";
+        connectBtn.style.background = "#34c759";
+        connectBtn.textContent = "接続中…";
+
+        // スキャンループの開始
+        readLoop();
+      } catch (err) {
+        statusEl.textContent = "接続エラー: " + err.message;
+      }
+    });
+
+    async function readLoop() {
+      // 簡易的なポーリング処理（タグのIDm取得リクエスト）
+      // ※通信コマンド群を送信してレスポンスを受け取る処理
+      while (device && device.opened) {
+        try {
+          // RC-S380用のInitalization / Pollingコマンドパケット(FeliCa)
+          const command = new Uint8Array([0x00, 0x00, 0xff, 0x05, 0xfb, 0xd6, 0x06, 0x01, 0x00, 0x24]);
+          await device.transferOut(2, command);
+
+          const result = await device.transferIn(1, 64);
+          const data = new Uint8Array(result.data.buffer);
+
+          // レスポンスからIDm（固有識別番号）を抽出
+          if (data.length > 10 && data[5] === 0xd7) {
+            const idmArray = data.slice(10, 18);
+            const idmHex = Array.from(idmArray).map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+
+            if (idmHex && idmHex !== "0000000000000000") {
+              handleTagRead(idmHex);
+              await new Promise(r => setTimeout(r, 1500)); // 連続読み込み防止のウェイト
+            }
+          }
+        } catch (e) {
+          // 読み取りエラー時は短時間待機して再試行
+        }
+        await new Promise(r => setTimeout(r, 300));
+      }
+    }
+
+    function handleTagRead(tagId) {
+      const title = "ゲームソフト (ID: " + tagId + ")";
+      const index = lentGames.findIndex(item => item.id === tagId);
+
+      if (index !== -1) {
+        lentGames.splice(index, 1);
+        statusEl.textContent = `【返却完了】 ID: ${tagId}`;
+      } else {
+        lentGames.push({ id: tagId, title: title });
+        statusEl.textContent = `【貸出完了】 ID: ${tagId}`;
+      }
+
+      localStorage.setItem('lentGames', JSON.stringify(lentGames));
+      renderList();
+    }
+
+    function renderList() {
+      gameListEl.innerHTML = '';
+      lentGames.forEach((game, i) => {
+        gameListEl.innerHTML += `
+          <div class="item">
+            <span>${game.title}</span>
+            <button onclick="removeItem(${i})">削除</button>
+          </div>`;
+      });
+      countEl.textContent = lentGames.length;
+    }
+
+    function removeItem(i) {
+      lentGames.splice(i, 1);
+      localStorage.setItem('lentGames', JSON.stringify(lentGames));
+      renderList();
+    }
+
+    renderList();
+  </script>
+</body>
+</html>
