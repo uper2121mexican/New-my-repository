@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RC-S380 貸出管理 (安定高速版)</title>
+  <style>
+    :root {
+      --bg: #f4f6f8;
+      --card: #ffffff;
+      --primary: #007aff;
+      --danger: #ff3b30;
+      --text: #1c1c1e;
+      --sub: #8e8e93;
+      --border: #e5e5ea;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, sans-serif; }
+    body { background: var(--bg); color: var(--text); padding: 16px; max-width: 500px; margin: 0 auto; }
+
+    h1 { font-size: 1.3rem; text-align: center; margin-bottom: 16px; }
+
+    .card {
+      background: var(--card);
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 16px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+    }
+
+    .btn {
+      width: 100%;
+      padding: 12px;
+      background: var(--primary);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-weight: bold;
+      font-size: 1rem;
+      cursor: pointer;
+    }
+    .btn:active { opacity: 0.8; }
+
+    .status {
+      margin-top: 10px;
+      text-align: center;
+      color: var(--sub);
+      font-size: 0.9rem;
+      word-break: break-all;
+    }
+
+    .list-header {
+      display: flex;
+      justify-content: space-between;
+      font-weight: bold;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 8px;
+    }
+
+    .item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .item:last-child { border-bottom: none; }
+
+    .btn-del {
+      background: var(--danger);
+      color: white;
+      border: none;
+      padding: 6px 12px;
+      font-size: 0.8rem;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>🎮 ゲーム貸出管理 (RC-S380)</h1>
+
+  <div class="card">
+    <button id="connectBtn" class="btn">PaSoRi (RC-S380) を接続</button>
+    <div id="status" class="status">ボタンを押してRC-S380を接続してください</div>
+  </div>
+
+  <div class="card">
+    <div class="list-header">
+      <span>貸出中リスト</span>
+      <span id="count">0本</span>
+    </div>
+    <div id="gameList"></div>
+  </div>
+
+  <script>
+    const connectBtn = document.getElementById('connectBtn');
+    const statusEl = document.getElementById('status');
+    const gameListEl = document.getElementById('gameList');
+    const countEl = document.getElementById('count');
+
+    let lentGames = JSON.parse(localStorage.getItem('lentGames')) || [];
+    let device = null;
+    let isPolling = false;
+
+    const VENDOR_ID = 0x054c;
+    const PRODUCT_ID = 0x06c1;
+
+    // パケット構築処理
+    function buildFrame(cmd) {
+      const len = cmd.length;
+      let checksum = 0;
+      for (let i = 0; i < len; i++) checksum += cmd[i];
+      const dcs = (0x100 - (checksum & 0xff)) & 0xff;
+
+      const frame = new Uint8Array(5 + len + 2);
+      frame[0] = 0x00;
+      frame[1] = 0x00;
+      frame[2] = 0xff;
+      frame[3] = len;
+      frame[4] = (0x100 - len) & 0xff;
+      frame.set(cmd, 5);
+      frame[5 + len] = dcs;
+      frame[5 + len + 1] = 0x00;
+      return frame;
+    }
+
+    // パケット送信 (ACK確実に処理)
+    async function sendCommand(cmd) {
+      const frame = buildFrame(cmd);
+      await device.transferOut(2, frame);
+      
+      // レスポンス受信
+      let res = await device.transferIn(1, 64);
+      let data = new Uint8Array(res.data.buffer);
+      
+      // ACK(6byte)が返ってきたら次のデータ本体を受信
+      if (data.length === 6 && data[2] === 0xff && data[3] === 0x00) {
+        res = await device.transferIn(1, 64);
+        data = new Uint8Array(res.data.buffer);
+      }
+      return data;
+    }
+
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+    connectBtn.addEventListener('click', async () => {
+      try {
+        device = await navigator.usb.requestDevice({
+          filters: [{ vendorId: VENDOR_ID, productId: PRODUCT_ID }]
+        });
+
+        await device.open();
+        await device.selectConfiguration(1);
+        await device.claimInterface(0);
+
+        statusEl.textContent = "初期化中...";
+
+        // 安定動作に必要な最小初期化
+        try {
+          await sendCommand(new Uint8Array([0xd6, 0x00])); // Reset
+          await sleep(50);
+          await sendCommand(new Uint8Array([0xd6, 0x02, 0x00, 0x18])); // SetCommandType
+          await sleep(50);
+          await sendCommand(new Uint8Array([0xd6, 0x08, 0x01, 0x00])); // RF Config
+          await sleep(50);
+        } catch (e) {
+          console.log("Init warning:", e);
+        }
+
+        statusEl.textContent = "接続完了！タグをかざしてください";
+        statusEl.style.color = "#007aff";
+        connectBtn.style.background = "#34c759";
+        connectBtn.textContent = "接続中";
+
+        if (!isPolling) {
+          isPolling = true;
+          pollLoop();
+        }
+      } catch (err) {
+        statusEl.textContent = "接続エラー: " + err.message;
+        statusEl.style.color = "#ff3b30";
+      }
+    });
+
+    async function pollLoop() {
+      let lastId = "";
+      let lastTime = 0;
+
+      while (device && device.opened) {
+        try {
+          // 1. FeliCa (Suica / PASMO / マイナカード / FeliCaタグ) ポーリング
+          const felicaCmd = new Uint8Array([0xd6, 0x20, 0x01, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00]);
+          const felicaRes = await sendCommand(felicaCmd);
+
+          if (felicaRes.length >= 19 && felicaRes[5] === 0xd7 && felicaRes[7] === 0x00) {
+            const idm = Array.from(felicaRes.slice(11, 19))
+              .map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+            
+            const now = Date.now();
+            if (idm !== lastId || (now - lastTime > 2000)) {
+              lastId = idm;
+              lastTime = now;
+              handleTagRead(idm);
+            }
+            await sleep(300);
+            continue;
+          }
+
+          await sleep(50);
+
+          // 2. MIFARE (Type-A NTAG / キーホルダー型タグ) ポーリング
+          const mifareCmd = new Uint8Array([0xd6, 0x4a, 0x01, 0x00]);
+          const mifareRes = await sendCommand(mifareCmd);
+
+          if (mifareRes.length >= 11 && mifareRes[5] === 0xd7 && mifareRes[7] === 0x00) {
+            const uidLen = mifareRes[10];
+            if (mifareRes.length >= 11 + uidLen) {
+              const uid = Array.from(mifareRes.slice(11, 11 + uidLen))
+                .map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+
+              const now = Date.now();
+              if (uid !== lastId || (now - lastTime > 2000)) {
+                lastId = uid;
+                lastTime = now;
+                handleTagRead(uid);
+              }
+            }
+          }
+        } catch (e) {
+          console.error("Polling error:", e);
+        }
+
+        // 次のスキャンまで適切なウェイトを挟む
+        await sleep(150);
+      }
+    }
+
+    function handleTagRead(tagId) {
+      const title = "ゲームソフト (ID: " + tagId + ")";
+      const index = lentGames.findIndex(item => item.id === tagId);
+
+      if (index !== -1) {
+        lentGames.splice(index, 1);
+        statusEl.style.color = "#007aff";
+        statusEl.textContent = `【返却完了】 ${tagId}`;
+      } else {
+        lentGames.push({ id: tagId, title: title });
+        statusEl.style.color = "#34c759";
+        statusEl.textContent = `【貸出完了】 ${tagId}`;
+      }
+
+      saveData();
+      renderList();
+    }
+
+    function renderList() {
+      gameListEl.innerHTML = '';
+      if (lentGames.length === 0) {
+        gameListEl.innerHTML = '<div style="text-align:center; color:var(--sub); padding:12px; font-size:0.85rem;">貸出中のゲームはありません</div>';
+      } else {
+        lentGames.forEach((game, index) => {
+          const div = document.createElement('div');
+          div.className = 'item';
+          div.innerHTML = `
+            <div>
+              <div>${escapeHtml(game.title)}</div>
+            </div>
+            <button class="btn-del" onclick="removeItem(${index})">返却</button>
+          `;
+          gameListEl.appendChild(div);
+        });
+      }
+      countEl.textContent = `${lentGames.length}本`;
+    }
+
+    function removeItem(index) {
+      lentGames.splice(index, 1);
+      saveData();
+      renderList();
+    }
+
+    function saveData() {
+      localStorage.setItem('lentGames', JSON.stringify(lentGames));
+    }
+
+    function escapeHtml(str) {
+      return str.replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[m]);
+    }
+
+    renderList();
+  </script>
+</body>
+</html>
