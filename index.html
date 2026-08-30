@@ -84,7 +84,7 @@
       font-size: 0.75rem;
       padding: 10px;
       border-radius: 8px;
-      height: 120px;
+      height: 140px;
       overflow-y: auto;
       white-space: pre-wrap;
       word-break: break-all;
@@ -118,6 +118,8 @@
     const PRODUCT_ID = 0x06c1; // RC-S380
 
     let device = null;
+    let epIn = 1;
+    let epOut = 2;
     let isReading = false;
     let lentGames = JSON.parse(localStorage.getItem('lentGames')) || [];
 
@@ -152,16 +154,16 @@
     async function communicate(cmd, timeout = 500) {
       if (!device || !device.opened) return null;
       try {
-        await device.transferOut(2, makePacket(cmd));
+        await device.transferOut(epOut, makePacket(cmd));
 
-        const read = device.transferIn(1, 64);
+        const read = device.transferIn(epIn, 64);
         const timer = new Promise((_, reject) => setTimeout(() => reject("Timeout"), timeout));
         
         let res = await Promise.race([read, timer]);
         let data = new Uint8Array(res.data.buffer);
 
         if (data.length === 6 && data[2] === 0xff && data[3] === 0x00) {
-          res = await Promise.race([device.transferIn(1, 64), timer]);
+          res = await Promise.race([device.transferIn(epIn, 64), timer]);
           data = new Uint8Array(res.data.buffer);
         }
         return data;
@@ -180,13 +182,21 @@
         await device.open();
         await device.selectConfiguration(1);
         await device.claimInterface(0);
-        log("USBデバイス確保完了");
 
-        statusEl.textContent = "ウェイクアップコマンド送信中...";
+        // エンドポイント自動検出
+        const endpoints = device.configuration.interfaces[0].alternate.endpoints;
+        endpoints.forEach(ep => {
+          if (ep.direction === "in") epIn = ep.endpointNumber;
+          if (ep.direction === "out") epOut = ep.endpointNumber;
+        });
+        log(`端子判定: In=${epIn}, Out=${epOut}`);
 
-        // --- RC-S380 強制アクティベートシーケンス ---
-        // ACKリセット
-        await device.transferOut(2, new Uint8Array([0x00, 0x00, 0xff, 0x00, 0xff, 0x00]));
+        statusEl.textContent = "初期化シーケンス実行中...";
+
+        // ACKフレームリセット
+        try {
+          await device.transferOut(epOut, new Uint8Array([0x00, 0x00, 0xff, 0x00, 0xff, 0x00]));
+        } catch(e){}
         await sleep(100);
 
         // 1. Reset
@@ -194,17 +204,17 @@
         log("Reset応答: " + (r1 ? r1.length + "bytes" : "無応答"));
         await sleep(100);
 
-        // 2. SetCommandType (0x01: Transparent / 0x18)
+        // 2. SetCommandType
         let r2 = await communicate(new Uint8Array([0xd6, 0x02, 0x00, 0x18]));
         log("SetCmdType応答: " + (r2 ? r2.length + "bytes" : "無応答"));
         await sleep(100);
 
-        // 3. Carrier ON (電波出力)
+        // 3. Carrier ON
         let r3 = await communicate(new Uint8Array([0xd6, 0x06, 0x01]));
         log("CarrierON応答: " + (r3 ? r3.length + "bytes" : "無応答"));
         await sleep(100);
 
-        statusEl.textContent = "🟢 ポーリング実行中（カードをかざしてください）";
+        statusEl.textContent = "🟢 タグ/カードをかざしてください";
         statusEl.style.color = "var(--success)";
         connectBtn.disabled = true;
 
@@ -221,30 +231,41 @@
     async function startPolling() {
       let lastTag = "";
       let lastTime = 0;
-      let loopCount = 0;
 
       while (isReading && device && device.opened) {
-        loopCount++;
-        if (loopCount % 20 === 0) {
-          log("スキャンループ動作中..."); // 生存確認ログ
-        }
-
         // FeliCa Polling
         const felicaPkt = new Uint8Array([0xd6, 0x20, 0x01, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00]);
-        const fRes = await communicate(felicaPkt, 250);
+        const fRes = await communicate(felicaPkt, 300);
 
-        if (fRes) {
-          // 応答があればログを出力して解析
-          if (fRes.length >= 19 && fRes[5] === 0xd7) {
-            const idm = Array.from(fRes.slice(11, 19))
+        if (fRes && fRes.length >= 19 && fRes[5] === 0xd7) {
+          const idm = Array.from(fRes.slice(11, 19))
+            .map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+
+          const now = Date.now();
+          if (idm !== lastTag || (now - lastTime > 2000)) {
+            lastTag = idm;
+            lastTime = now;
+            log("★ 検出(FeliCa): " + idm);
+            processCard(idm);
+          }
+        }
+
+        // MIFARE / NTAG Polling
+        const mifarePkt = new Uint8Array([0xd6, 0x4a, 0x01, 0x00]);
+        const mRes = await communicate(mifarePkt, 300);
+
+        if (mRes && mRes.length >= 11 && mRes[5] === 0xd7) {
+          const len = mRes[10];
+          if (mRes.length >= 11 + len) {
+            const uid = Array.from(mRes.slice(11, 11 + len))
               .map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
 
             const now = Date.now();
-            if (idm !== lastTag || (now - lastTime > 2000)) {
-              lastTag = idm;
+            if (uid !== lastTag || (now - lastTime > 2000)) {
+              lastTag = uid;
               lastTime = now;
-              log("★ FeliCa検出: " + idm);
-              processCard(idm);
+              log("★ 検出(NFC): " + uid);
+              processCard(uid);
             }
           }
         }
@@ -258,9 +279,11 @@
       if (idx >= 0) {
         lentGames.splice(idx, 1);
         statusEl.textContent = `【返却】 ID: ${id}`;
+        statusEl.style.color = "var(--primary)";
       } else {
         lentGames.push({ id: id, title: `カード (ID:${id})` });
         statusEl.textContent = `【貸出】 ID: ${id}`;
+        statusEl.style.color = "var(--success)";
       }
       saveAndRender();
     }
