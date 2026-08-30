@@ -114,8 +114,8 @@
   </div>
 
   <script>
-    const VENDOR_ID = 0x054c;  // Sony
-    const PRODUCT_ID = 0x06c1; // RC-S380
+    const VENDOR_ID = 0x054c;
+    const PRODUCT_ID = 0x06c1;
 
     let device = null;
     let epIn = 1;
@@ -136,37 +136,28 @@
 
     const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-    function makePacket(command) {
-      const len = command.length;
+    // パケット構築（Sony RC-S380標準フレーム）
+    function buildCmd(cmd) {
+      const len = cmd.length;
       let sum = 0;
-      for (let i = 0; i < len; i++) sum += command[i];
+      for (let i = 0; i < len; i++) sum += cmd[i];
       const dcs = (0x100 - (sum & 0xff)) & 0xff;
-      
+
       const pkt = new Uint8Array(5 + len + 2);
       pkt[0] = 0x00; pkt[1] = 0x00; pkt[2] = 0xff;
       pkt[3] = len; pkt[4] = (0x100 - len) & 0xff;
-      pkt.set(command, 5);
+      pkt.set(cmd, 5);
       pkt[5 + len] = dcs;
       pkt[5 + len + 1] = 0x00;
       return pkt;
     }
 
-    async function communicate(cmd, timeout = 500) {
+    async function sendRaw(bytes) {
       if (!device || !device.opened) return null;
       try {
-        await device.transferOut(epOut, makePacket(cmd));
-
-        const read = device.transferIn(epIn, 64);
-        const timer = new Promise((_, reject) => setTimeout(() => reject("Timeout"), timeout));
-        
-        let res = await Promise.race([read, timer]);
-        let data = new Uint8Array(res.data.buffer);
-
-        if (data.length === 6 && data[2] === 0xff && data[3] === 0x00) {
-          res = await Promise.race([device.transferIn(epIn, 64), timer]);
-          data = new Uint8Array(res.data.buffer);
-        }
-        return data;
+        await device.transferOut(epOut, bytes);
+        const res = await device.transferIn(epIn, 64);
+        return new Uint8Array(res.data.buffer);
       } catch (e) {
         return null;
       }
@@ -174,7 +165,7 @@
 
     connectBtn.addEventListener('click', async () => {
       try {
-        log("接続開始...");
+        log("=== 接続開始 ===");
         device = await navigator.usb.requestDevice({
           filters: [{ vendorId: VENDOR_ID, productId: PRODUCT_ID }]
         });
@@ -183,35 +174,28 @@
         await device.selectConfiguration(1);
         await device.claimInterface(0);
 
-        // エンドポイント自動検出
+        // エンドポイント判定
         const endpoints = device.configuration.interfaces[0].alternate.endpoints;
         endpoints.forEach(ep => {
           if (ep.direction === "in") epIn = ep.endpointNumber;
           if (ep.direction === "out") epOut = ep.endpointNumber;
         });
-        log(`端子判定: In=${epIn}, Out=${epOut}`);
+        log(`端子確定: In=${epIn}, Out=${epOut}`);
 
-        statusEl.textContent = "初期化シーケンス実行中...";
+        statusEl.textContent = "初期化中...";
 
-        // ACKフレームリセット
-        try {
-          await device.transferOut(epOut, new Uint8Array([0x00, 0x00, 0xff, 0x00, 0xff, 0x00]));
-        } catch(e){}
+        // 1. ACK送信でデバイスの状態リセット
+        await sendRaw(new Uint8Array([0x00, 0x00, 0xff, 0x00, 0xff, 0x00]));
         await sleep(100);
 
-        // 1. Reset
-        let r1 = await communicate(new Uint8Array([0xd6, 0x00]));
-        log("Reset応答: " + (r1 ? r1.length + "bytes" : "無応答"));
+        // 2. High Speed Command Type 設定 (0x00, 0x18)
+        let r1 = await sendRaw(buildCmd(new Uint8Array([0xd6, 0x02, 0x00, 0x18])));
+        log("SetCmd: " + (r1 ? Array.from(r1).map(b => b.toString(16).padStart(2,'0')).join(' ') : "無応答"));
         await sleep(100);
 
-        // 2. SetCommandType
-        let r2 = await communicate(new Uint8Array([0xd6, 0x02, 0x00, 0x18]));
-        log("SetCmdType応答: " + (r2 ? r2.length + "bytes" : "無応答"));
-        await sleep(100);
-
-        // 3. Carrier ON
-        let r3 = await communicate(new Uint8Array([0xd6, 0x06, 0x01]));
-        log("CarrierON応答: " + (r3 ? r3.length + "bytes" : "無応答"));
+        // 3. RF電波 ON
+        let r2 = await sendRaw(buildCmd(new Uint8Array([0xd6, 0x06, 0x01])));
+        log("CarrierON: " + (r2 ? Array.from(r2).map(b => b.toString(16).padStart(2,'0')).join(' ') : "無応答"));
         await sleep(100);
 
         statusEl.textContent = "🟢 タグ/カードをかざしてください";
@@ -222,7 +206,7 @@
         startPolling();
 
       } catch (err) {
-        log("エラー: " + err);
+        log("エラー: " + err.message);
         statusEl.textContent = "接続エラー: " + err.message;
         statusEl.style.color = "var(--danger)";
       }
@@ -233,44 +217,33 @@
       let lastTime = 0;
 
       while (isReading && device && device.opened) {
-        // FeliCa Polling
-        const felicaPkt = new Uint8Array([0xd6, 0x20, 0x01, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00]);
-        const fRes = await communicate(felicaPkt, 300);
+        // FeliCa Polling コマンド
+        const cmd = buildCmd(new Uint8Array([0xd6, 0x20, 0x01, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00]));
+        const res = await sendRaw(cmd);
 
-        if (fRes && fRes.length >= 19 && fRes[5] === 0xd7) {
-          const idm = Array.from(fRes.slice(11, 19))
-            .map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
-
-          const now = Date.now();
-          if (idm !== lastTag || (now - lastTime > 2000)) {
-            lastTag = idm;
-            lastTime = now;
-            log("★ 検出(FeliCa): " + idm);
-            processCard(idm);
-          }
-        }
-
-        // MIFARE / NTAG Polling
-        const mifarePkt = new Uint8Array([0xd6, 0x4a, 0x01, 0x00]);
-        const mRes = await communicate(mifarePkt, 300);
-
-        if (mRes && mRes.length >= 11 && mRes[5] === 0xd7) {
-          const len = mRes[10];
-          if (mRes.length >= 11 + len) {
-            const uid = Array.from(mRes.slice(11, 11 + len))
+        if (res && res.length >= 15) {
+          // レスポンスの16進数文字列化
+          const hex = Array.from(res).map(b => b.toString(16).padStart(2,'0')).join('');
+          
+          // FeliCa応答マーク (d7 21 または d7) の検出
+          if (hex.includes("d721") || hex.includes("d720")) {
+            // IDm抽出 (11バイト目以降)
+            const idm = Array.from(res.slice(11, 19))
               .map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
 
-            const now = Date.now();
-            if (uid !== lastTag || (now - lastTime > 2000)) {
-              lastTag = uid;
-              lastTime = now;
-              log("★ 検出(NFC): " + uid);
-              processCard(uid);
+            if (idm && idm !== "0000000000000000") {
+              const now = Date.now();
+              if (idm !== lastTag || (now - lastTime > 2000)) {
+                lastTag = idm;
+                lastTime = now;
+                log("★ カード検出: " + idm);
+                processCard(idm);
+              }
             }
           }
         }
 
-        await sleep(200);
+        await sleep(150);
       }
     }
 
