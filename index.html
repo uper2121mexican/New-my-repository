@@ -108,6 +108,9 @@
     const VENDOR_ID = 0x054c;
     const PRODUCT_ID = 0x06c1;
 
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+    // パケット構築処理
     function buildFrame(cmd) {
       const len = cmd.length;
       let checksum = 0;
@@ -126,22 +129,31 @@
       return frame;
     }
 
-    async function sendCommand(cmd) {
-      if (!device || !device.opened) return new Uint8Array();
+    // パケット送信 (タイムアウト＆安全受信処理付き)
+    async function sendCommand(cmd, timeoutMs = 1000) {
+      if (!device || !device.opened) return null;
       const frame = buildFrame(cmd);
-      await device.transferOut(2, frame);
 
-      let res = await device.transferIn(1, 64);
-      let data = new Uint8Array(res.data.buffer);
+      try {
+        await device.transferOut(2, frame);
 
-      if (data.length === 6 && data[2] === 0xff && data[3] === 0x00) {
-        res = await device.transferIn(1, 64);
-        data = new Uint8Array(res.data.buffer);
+        // レスポンス受信 (タイムアウト付きRace)
+        const readPromise = device.transferIn(1, 64);
+        const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), timeoutMs));
+        
+        let res = await Promise.race([readPromise, timeoutPromise]);
+        let data = new Uint8Array(res.data.buffer);
+
+        // ACK(6byte)応答の場合は本レスポンスを追加受信
+        if (data.length === 6 && data[2] === 0xff && data[3] === 0x00) {
+          res = await Promise.race([device.transferIn(1, 64), timeoutPromise]);
+          data = new Uint8Array(res.data.buffer);
+        }
+        return data;
+      } catch (e) {
+        return null; // タイムアウトや通信エラー時は null を返す
       }
-      return data;
     }
-
-    const sleep = ms => new Promise(r => setTimeout(r, ms));
 
     connectBtn.addEventListener('click', async () => {
       try {
@@ -149,22 +161,26 @@
           filters: [{ vendorId: VENDOR_ID, productId: PRODUCT_ID }]
         });
 
-        statusEl.textContent = "デバイスオープン中...";
+        statusEl.textContent = "USBポートオープン中...";
         await device.open();
         await device.selectConfiguration(1);
         await device.claimInterface(0);
 
-        statusEl.textContent = "初期化中...";
+        statusEl.textContent = "初期化シーケンス実行中...";
 
-        // リセットコマンド送信
+        // 1. リセット
         await sendCommand(new Uint8Array([0xd6, 0x00]));
         await sleep(100);
 
-        // コマンドタイプ設定
-        await sendCommand(new Uint8Array([0xd6, 0x02, 0x00, 0x18]));
+        // 2. コマンドタイプ設定 (Inznet)
+        const setCmdRes = await sendCommand(new Uint8Array([0xd6, 0x02, 0x00, 0x18]));
         await sleep(100);
 
-        statusEl.textContent = "接続完了！タグをかざしてください";
+        // 3. RFパラメータ設定
+        await sendCommand(new Uint8Array([0xd6, 0x08, 0x01, 0x00]));
+        await sleep(100);
+
+        statusEl.textContent = "接続完了！ICカード / タグをかざしてください";
         statusEl.style.color = "#007aff";
         connectBtn.style.background = "#34c759";
         connectBtn.textContent = "接続中";
@@ -175,7 +191,7 @@
         }
       } catch (err) {
         console.error(err);
-        statusEl.textContent = "接続エラー: " + err.message + " (USBを抜き挿しして再試行してください)";
+        statusEl.textContent = "接続エラー: " + err.message;
         statusEl.style.color = "#ff3b30";
       }
     });
@@ -188,7 +204,7 @@
         try {
           // FeliCa Polling
           const felicaCmd = new Uint8Array([0xd6, 0x20, 0x01, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00]);
-          const felicaRes = await sendCommand(felicaCmd);
+          const felicaRes = await sendCommand(felicaCmd, 500);
 
           if (felicaRes && felicaRes.length >= 19 && felicaRes[5] === 0xd7 && felicaRes[7] === 0x00) {
             const idm = Array.from(felicaRes.slice(11, 19))
@@ -200,15 +216,13 @@
               lastTime = now;
               handleTagRead(idm);
             }
-            await sleep(300);
+            await sleep(200);
             continue;
           }
 
-          await sleep(50);
-
-          // MIFARE Polling
+          // MIFARE (Type-A) Polling
           const mifareCmd = new Uint8Array([0xd6, 0x4a, 0x01, 0x00]);
-          const mifareRes = await sendCommand(mifareCmd);
+          const mifareRes = await sendCommand(mifareCmd, 500);
 
           if (mifareRes && mifareRes.length >= 11 && mifareRes[5] === 0xd7 && mifareRes[7] === 0x00) {
             const uidLen = mifareRes[10];
@@ -225,11 +239,10 @@
             }
           }
         } catch (e) {
-          // 通信エラーが起きた場合は短時間待機して復帰試行
-          await sleep(500);
+          // エラー時も処理を止めずに継続
         }
 
-        await sleep(200);
+        await sleep(150);
       }
     }
 
