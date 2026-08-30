@@ -118,6 +118,8 @@
     const PRODUCT_ID = 0x06c1;
 
     let device = null;
+    let epIn = null;
+    let epOut = null;
     let isReading = false;
     let lentGames = JSON.parse(localStorage.getItem('lentGames')) || [];
 
@@ -132,66 +134,49 @@
       logEl.textContent = `[${now}] ${msg}\n` + logEl.textContent;
     }
 
-    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-
-    // パケット構築
-    function buildCmd(cmd) {
+    // パケット構築（チェックサム計算）
+    function buildPacket(cmd) {
       const len = cmd.length;
       let sum = 0;
       for (let i = 0; i < len; i++) sum += cmd[i];
-      const dcs = (0x100 - (sum & 0xff)) & 0xff;
+      const dcs = (256 - (sum & 0xff)) & 0xff;
 
-      const pkt = new Uint8Array(5 + len + 2);
+      const pkt = new Uint8Array(6 + len + 2);
       pkt[0] = 0x00; pkt[1] = 0x00; pkt[2] = 0xff;
-      pkt[3] = len; pkt[4] = (0x100 - len) & 0xff;
+      pkt[3] = len; pkt[4] = (256 - len) & 0xff;
       pkt.set(cmd, 5);
       pkt[5 + len] = dcs;
       pkt[5 + len + 1] = 0x00;
       return pkt;
     }
 
-    // タイムアウト付き送信関数（Bulk転送／Control転送の両対応フォールバック）
-    async function sendCommand(cmdData) {
-      if (!device || !device.opened) return null;
-
-      const pkt = buildCmd(cmdData);
-
-      // 1. まずBulk転送をタイムアウト付きで試行
+    // 2段階読み取り対応の通信関数
+    async function communicate(cmd, timeoutMs = 500) {
+      if (!device || !epIn || !epOut) return null;
       try {
-        const transferPromise = (async () => {
-          await device.transferOut(2, pkt);
-          const res = await device.transferIn(1, 64);
-          return new Uint8Array(res.data.buffer);
-        })();
+        const pkt = buildPacket(cmd);
+        await device.transferOut(epOut, pkt);
 
-        const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error("BulkTimeout")), 300)
-        );
+        // 1回目の受信（ACKまたは応答データ）
+        let res1 = await Promise.race([
+          device.transferIn(epIn, 64),
+          new Promise((_, r) => setTimeout(() => r(new Error("Timeout")), timeoutMs))
+        ]);
+        let data1 = new Uint8Array(res1.data.buffer);
 
-        return await Promise.race([transferPromise, timeoutPromise]);
-      } catch (e) {
-        // Bulk転送がタイムアウトまたは失敗した場合、Control転送を試行
-        try {
-          await device.controlTransferOut({
-            requestType: 'vendor',
-            recipient: 'device',
-            request: 0x00,
-            value: 0x0000,
-            index: 0x0000
-          }, pkt);
-
-          const res = await device.controlTransferIn({
-            requestType: 'vendor',
-            recipient: 'device',
-            request: 0x01,
-            value: 0x0000,
-            index: 0x0000
-          }, 64);
-
-          return new Uint8Array(res.data.buffer);
-        } catch (ctrlErr) {
-          return null;
+        // もし受信したのがACK（00 00 ff 00 ff 00）なら、もう一度受信して本データを取得
+        if (data1.length === 6 && data1[0] === 0x00 && data1[2] === 0xff) {
+          let res2 = await Promise.race([
+            device.transferIn(epIn, 64),
+            new Promise((_, r) => setTimeout(() => r(new Error("Timeout")), timeoutMs))
+          ]);
+          return new Uint8Array(res2.data.buffer);
         }
+
+        // 1回目で一気にデータが届いた場合はそのまま返す
+        return data1;
+      } catch (e) {
+        return null;
       }
     }
 
@@ -206,25 +191,39 @@
         await device.selectConfiguration(1);
         await device.claimInterface(0);
 
-        log("USBアクセス確保。初期化試行中...");
+        // エンドポイント自動判定
+        const endpoints = device.configuration.interfaces[0].alternate.endpoints;
+        endpoints.forEach(ep => {
+          if (ep.direction === 'in') epIn = ep.endpointNumber;
+          if (ep.direction === 'out') epOut = ep.endpointNumber;
+        });
+        log(`端子確定: In=${epIn}, Out=${epOut}`);
+
         statusEl.textContent = "初期化中...";
 
-        // 1. Reset (0xd6, 0x00)
-        let r1 = await sendCommand(new Uint8Array([0xd6, 0x00]));
-        log("Reset: " + (r1 ? "OK (" + r1.length + "B)" : "応答なし(次へ)"));
-        await sleep(50);
+        // 通信の詰まりを解消するための空打ち(ダミーACK送信)
+        try {
+          await device.transferOut(epOut, new Uint8Array([0x00, 0x00, 0xff, 0x00, 0xff, 0x00]));
+          await Promise.race([ device.transferIn(epIn, 64), new Promise(r => setTimeout(r, 100)) ]);
+        } catch(e) {}
 
-        // 2. Set Command Type (0xd6, 0x02, 0x00, 0x18)
-        let r2 = await sendCommand(new Uint8Array([0xd6, 0x02, 0x00, 0x18]));
-        log("SetCmd: " + (r2 ? "OK" : "応答なし"));
-        await sleep(50);
+        // 1. Reset
+        let r1 = await communicate(new Uint8Array([0xd6, 0x00]));
+        log("Reset: " + (r1 ? "成功" : "失敗"));
 
-        // 3. Carrier ON (0xd6, 0x06, 0x01)
-        let r3 = await sendCommand(new Uint8Array([0xd6, 0x06, 0x01]));
-        log("CarrierON: " + (r3 ? "OK" : "応答なし"));
-        await sleep(50);
+        // 2. Set Command Type
+        let r2 = await communicate(new Uint8Array([0xd6, 0x02, 0x00, 0x18]));
+        log("SetCmd: " + (r2 ? "成功" : "失敗"));
 
-        statusEl.textContent = "🟢 タグ/カードをかざしてください";
+        // 3. Carrier ON
+        let r3 = await communicate(new Uint8Array([0xd6, 0x06, 0x00]));
+        log("CarrierON: " + (r3 ? "成功" : "失敗"));
+
+        if (!r1 && !r2 && !r3) {
+          throw new Error("PaSoRiからの応答がありません。");
+        }
+
+        statusEl.textContent = "🟢 カードをかざしてください";
         statusEl.style.color = "var(--success)";
         connectBtn.disabled = true;
 
@@ -233,7 +232,7 @@
 
       } catch (err) {
         log("エラー: " + err.message);
-        statusEl.textContent = "接続エラー: " + err.message;
+        statusEl.textContent = "エラー: " + err.message;
         statusEl.style.color = "var(--danger)";
       }
     });
@@ -244,28 +243,25 @@
 
       while (isReading && device && device.opened) {
         // FeliCa Polling
-        const res = await sendCommand(new Uint8Array([0xd6, 0x20, 0x01, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00]));
+        const res = await communicate(new Uint8Array([0xd6, 0x20, 0x01, 0x00, 0x00, 0xff, 0xff, 0x01, 0x00]), 200);
 
-        if (res && res.length >= 15) {
-          const hex = Array.from(res).map(b => b.toString(16).padStart(2,'0')).join('');
-          
-          if (hex.includes("d721") || hex.includes("d720") || hex.includes("d7")) {
-            const idm = Array.from(res.slice(11, 19))
-              .map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+        // データが届き、ペイロードの先頭(5バイト目)が d7 なら成功
+        if (res && res.length > 10 && res[5] === 0xd7) {
+          // IDmは11バイト目から8バイト分
+          const idm = Array.from(res.slice(11, 19))
+            .map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
 
-            if (idm && idm !== "0000000000000000" && idm.length === 16) {
-              const now = Date.now();
-              if (idm !== lastTag || (now - lastTime > 2000)) {
-                lastTag = idm;
-                lastTime = now;
-                log("★ カード検出: " + idm);
-                processCard(idm);
-              }
+          if (idm && idm !== "0000000000000000") {
+            const now = Date.now();
+            if (idm !== lastTag || (now - lastTime > 2000)) {
+              lastTag = idm;
+              lastTime = now;
+              log("★ カード検出: " + idm);
+              processCard(idm);
             }
           }
         }
-
-        await sleep(200);
+        await new Promise(r => setTimeout(r, 200));
       }
     }
 
