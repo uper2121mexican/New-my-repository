@@ -1,0 +1,706 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>ゲーム貸出管理</title>
+<style>
+  :root{
+    --bg:#ffffff;
+    --panel:#ffffff;
+    --panel-2:#f2f2f2;
+    --line:#dddddd;
+    --text:#111111;
+    --text-dim:#777777;
+    --green:#1a9c4a;
+    --green-bg:#e6f7ec;
+    --red:#d3342d;
+    --red-bg:#fdeceb;
+    --gray-bg:#eeeeee;
+    --mono:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Hiragino Sans","Yu Gothic",sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--bg);
+    color:var(--text);
+    font-family:var(--sans);
+    min-height:100vh;
+    padding-bottom:40px;
+  }
+  header{
+    position:sticky; top:0; z-index:10;
+    background:#ffffff;
+    border-bottom:1px solid var(--line);
+    padding:14px 16px 12px;
+  }
+  .title-row{display:flex; align-items:center; justify-content:space-between; gap:8px;}
+  h1{font-size:17px; font-weight:700; margin:0; letter-spacing:0.01em;}
+  .conn-pill{
+    display:flex; align-items:center; gap:6px;
+    font-size:12px; padding:5px 10px; border-radius:100px;
+    background:var(--panel-2); border:1px solid var(--line); color:var(--text-dim);
+    white-space:nowrap;
+  }
+  .conn-dot{width:7px;height:7px;border-radius:50%; background:var(--text-dim);}
+  .conn-pill.on{color:var(--green); border-color:#bfe6cc;}
+  .conn-pill.on .conn-dot{background:var(--green);}
+  .conn-pill.off{color:var(--red); border-color:#f2c6c3;}
+  .conn-pill.off .conn-dot{background:var(--red);}
+
+  .tabs{display:flex; gap:6px; margin-top:12px;}
+  .tab{
+    flex:1; text-align:center; padding:9px 8px; border-radius:9px;
+    background:transparent; border:1px solid var(--line); color:var(--text-dim);
+    font-size:13.5px; font-weight:600; cursor:pointer;
+  }
+  .tab.active{background:#111111; color:#ffffff; border-color:#111111;}
+
+  main{max-width:520px; margin:0 auto; padding:16px;}
+  .panel{display:none;}
+  .panel.active{display:block;}
+
+  .connect-box{
+    background:var(--panel-2); border:1px solid var(--line); border-radius:14px;
+    padding:16px; margin-bottom:16px; display:flex; align-items:center; gap:12px;
+  }
+  .connect-box p{margin:0; font-size:13px; color:var(--text-dim); line-height:1.5;}
+  button.primary{
+    background:#111111; color:#ffffff; border:none; border-radius:10px;
+    padding:11px 16px; font-size:14px; font-weight:700; cursor:pointer; white-space:nowrap;
+  }
+  button.primary:disabled{opacity:0.4;}
+  button.ghost{
+    background:#ffffff; color:var(--text-dim); border:1px solid var(--line);
+    border-radius:10px; padding:9px 14px; font-size:13px; cursor:pointer;
+  }
+  button.danger{color:var(--red); border-color:#f2c6c3;}
+
+  .scan-card{
+    border-radius:16px; padding:26px 20px; text-align:center; margin-bottom:18px;
+    border:1px solid var(--line); background:var(--panel-2);
+    transition:background 0.2s, border-color 0.2s;
+  }
+  .scan-card.state-idle{}
+  .scan-card.state-ok{background:var(--panel-2); border-color:var(--line);}
+  .scan-card.state-lend{background:var(--red-bg); border-color:#f2c6c3;}
+  .scan-card.state-return{background:var(--green-bg); border-color:#bfe6cc;}
+  .scan-card.state-unknown{background:#fff6e0; border-color:#f0dca0;}
+
+  .nfc-wave{width:46px; height:46px; margin:0 auto 12px; opacity:0.85;}
+  .scan-status{font-size:13px; color:var(--text-dim); margin-bottom:4px;}
+  .scan-main{font-size:19px; font-weight:700; min-height:26px;}
+  .scan-idm{font-family:var(--mono); font-size:12px; color:var(--text-dim); margin-top:8px; word-break:break-all;}
+
+  .field-row{display:flex; gap:8px; margin-top:14px;}
+  input[type=text]{
+    flex:1; background:#ffffff; border:1px solid var(--line); color:var(--text);
+    border-radius:9px; padding:10px 12px; font-size:14px;
+  }
+  input[type=text]:focus{outline:none; border-color:#111111;}
+
+  .section-title{font-size:13px; font-weight:700; color:var(--text-dim); margin:22px 0 10px; letter-spacing:0.02em;}
+  .list{display:flex; flex-direction:column; gap:8px;}
+  .row{
+    display:flex; align-items:center; justify-content:space-between; gap:10px;
+    background:#ffffff; border:1px solid var(--line); border-radius:11px; padding:11px 13px;
+  }
+  .row.on-loan{border-color:#f2c6c3; background:var(--red-bg);}
+  .row.available{border-color:#bfe6cc;}
+  .row-main{min-width:0;}
+  .row-name{font-size:14.5px; font-weight:600;}
+  .row-sub{font-size:11.5px; color:var(--text-dim); font-family:var(--mono); margin-top:2px;}
+  .row-time{font-size:11.5px; color:var(--text-dim); margin-top:2px;}
+  .empty{color:var(--text-dim); font-size:13px; padding:18px 4px; text-align:center;}
+
+  .badge{
+    font-size:10.5px; font-weight:700; padding:3px 8px; border-radius:100px;
+    flex-shrink:0;
+  }
+  .badge.red{background:var(--red-bg); color:var(--red);}
+  .badge.green{background:var(--green-bg); color:var(--green);}
+
+  details.manual{margin-top:20px;}
+  details.manual summary{cursor:pointer; font-size:12.5px; color:var(--text-dim);}
+  .manual-body{margin-top:10px; display:flex; gap:8px;}
+
+  .log-box{
+    margin-top:24px; background:#f7f7f7; border:1px solid var(--line); border-radius:10px;
+    padding:10px 12px; font-family:var(--mono); font-size:11px; color:#666666;
+    max-height:160px; overflow-y:auto; white-space:pre-wrap;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="title-row">
+    <h1>🎮 ゲーム貸出管理</h1>
+    <div class="conn-pill off" id="connPill"><span class="conn-dot"></span><span id="connLabel">未接続</span></div>
+  </div>
+  <div class="tabs">
+    <div class="tab active" data-mode="register">タグ登録</div>
+    <div class="tab" data-mode="lend">貸出・返却</div>
+  </div>
+</header>
+
+<main>
+
+  <div class="connect-box">
+    <p>PaSoRi S380 を USB-OTG でスマホに接続してから押してください。ブラウザにデバイス選択画面が出ます。</p>
+    <button class="primary" id="connectBtn">接続</button>
+  </div>
+
+  <!-- 登録モード -->
+  <div class="panel active" id="panel-register">
+    <div class="scan-card state-idle" id="regScanCard">
+      <svg class="nfc-wave" viewBox="0 0 100 100" fill="none" id="regWave">
+        <circle cx="50" cy="50" r="8" fill="currentColor" style="color:#111111"/>
+        <path d="M50 30 A 20 20 0 0 1 50 70" stroke="currentColor" stroke-width="4" stroke-linecap="round" style="color:#111111;opacity:0.7"/>
+        <path d="M50 15 A 35 35 0 0 1 50 85" stroke="currentColor" stroke-width="4" stroke-linecap="round" style="color:#111111;opacity:0.35"/>
+      </svg>
+      <div class="scan-status" id="regStatus">タグを PaSoRi にかざしてください</div>
+      <div class="scan-main" id="regMain">&nbsp;</div>
+      <div class="scan-idm" id="regIdm"></div>
+
+      <div class="field-row" id="regForm" style="display:none;">
+        <input type="text" id="regNameInput" placeholder="ゲーム名を入力">
+        <button class="primary" id="regSaveBtn">登録</button>
+      </div>
+    </div>
+
+    <div class="section-title">登録済みタグ (<span id="gameCount">0</span>)</div>
+    <div class="list" id="gameList"></div>
+
+    <details class="manual">
+      <summary>PaSoRiなしで手入力してテストする</summary>
+      <div class="manual-body">
+        <input type="text" id="manualIdmReg" placeholder="例: 0123456789ABCDEF">
+        <button class="ghost" id="manualRegBtn">読み込む</button>
+      </div>
+    </details>
+  </div>
+
+  <!-- 貸出・返却モード -->
+  <div class="panel" id="panel-lend">
+    <div class="scan-card state-idle" id="lendScanCard">
+      <svg class="nfc-wave" viewBox="0 0 100 100" fill="none">
+        <circle cx="50" cy="50" r="8" fill="currentColor" style="color:#111111"/>
+        <path d="M50 30 A 20 20 0 0 1 50 70" stroke="currentColor" stroke-width="4" stroke-linecap="round" style="color:#111111;opacity:0.7"/>
+        <path d="M50 15 A 35 35 0 0 1 50 85" stroke="currentColor" stroke-width="4" stroke-linecap="round" style="color:#111111;opacity:0.35"/>
+      </svg>
+      <div class="scan-status" id="lendStatus">タグを PaSoRi にかざしてください</div>
+      <div class="scan-main" id="lendMain">&nbsp;</div>
+      <div class="scan-idm" id="lendIdm"></div>
+    </div>
+
+    <div class="section-title">貸出中 (<span id="loanCount">0</span>)</div>
+    <div class="list" id="loanList"></div>
+
+    <details class="manual">
+      <summary>PaSoRiなしで手入力してテストする</summary>
+      <div class="manual-body">
+        <input type="text" id="manualIdmLend" placeholder="例: 0123456789ABCDEF">
+        <button class="ghost" id="manualLendBtn">読み込む</button>
+      </div>
+    </details>
+  </div>
+
+  <details class="manual">
+    <summary>デバッグログ</summary>
+    <div class="log-box" id="logBox"></div>
+  </details>
+
+</main>
+
+<script>
+/* =========================================================================
+   0. 小さなユーティリティ / ログ
+   ========================================================================= */
+const logBox = document.getElementById('logBox');
+function log(...args){
+  const line = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
+  console.log('[nfc]', line);
+  const div = document.createElement('div');
+  div.textContent = new Date().toLocaleTimeString() + '  ' + line;
+  logBox.appendChild(div);
+  logBox.scrollTop = logBox.scrollHeight;
+}
+function bytesToHex(bytes){
+  return Array.from(bytes).map(b => b.toString(16).padStart(2,'0')).join('').toUpperCase();
+}
+function hexToBytes(hex){
+  hex = hex.replace(/[^0-9a-fA-F]/g,'');
+  const out = new Uint8Array(hex.length/2);
+  for (let i=0;i<out.length;i++) out[i] = parseInt(hex.substr(i*2,2),16);
+  return out;
+}
+
+/* =========================================================================
+   1. データ保存 (localStorage のみ。バックエンド/サーバーは使わない)
+   ========================================================================= */
+const STORAGE_GAMES = 'game_lending_games_v1';   // { idm: { name } }
+const STORAGE_LOANS = 'game_lending_loans_v1';   // { idm: { borrowedAt } }
+
+function loadGames(){ try { return JSON.parse(localStorage.getItem(STORAGE_GAMES)) || {}; } catch(e){ return {}; } }
+function saveGames(obj){ localStorage.setItem(STORAGE_GAMES, JSON.stringify(obj)); }
+function loadLoans(){ try { return JSON.parse(localStorage.getItem(STORAGE_LOANS)) || {}; } catch(e){ return {}; } }
+function saveLoans(obj){ localStorage.setItem(STORAGE_LOANS, JSON.stringify(obj)); }
+
+let games = loadGames();
+let loans = loadLoans();
+
+/* =========================================================================
+   2. RC-S380 (PaSoRi S380) を WebUSB で直接叩くドライバ
+   ---------------------------------------------------------------------
+   PaSoRiはOSのICカードリーダー用ドライバではなく、ベンダー独自のUSBバル
+   ク転送で通信するチップ(NFC Port-100)を積んでいるため、Chrome/Edgeの
+   WebUSB APIから直接コマンドフレームを送受信できる。
+   ここでの実装は Sony RC-S380 のフレーム/コマンド仕様に基づく独自実装。
+   ========================================================================= */
+
+const RCS380_VENDOR_ID = 0x054c;
+const RCS380_PRODUCT_IDS = [0x06c1, 0x06c3]; // RC-S380/P, RC-S380/S
+
+const CMD = {
+  InSetRF: 0x00,
+  InSetProtocol: 0x02,
+  InCommRF: 0x04,
+  SwitchRF: 0x06,
+  GetFirmwareVersion: 0x20,
+  GetPDDataVersion: 0x22,
+  SetCommandType: 0x2A,
+};
+
+const ACK_FRAME = Uint8Array.of(0x00,0x00,0xFF,0x00,0xFF,0x00);
+
+class RCS380 {
+  constructor(){
+    this.device = null;
+    this.epOut = null;
+    this.epIn = null;
+    this.rxBuf = new Uint8Array(0);
+  }
+
+  async connect(){
+    this.device = await navigator.usb.requestDevice({
+      filters: RCS380_PRODUCT_IDS.map(pid => ({ vendorId: RCS380_VENDOR_ID, productId: pid }))
+    });
+    await this.device.open();
+    if (this.device.configuration === null){
+      await this.device.selectConfiguration(1);
+    }
+    const iface = this.device.configuration.interfaces[0];
+    await this.device.claimInterface(iface.interfaceNumber);
+    const alt = iface.alternate;
+    for (const ep of alt.endpoints){
+      if (ep.type === 'bulk' && ep.direction === 'out') this.epOut = ep.endpointNumber;
+      if (ep.type === 'bulk' && ep.direction === 'in') this.epIn = ep.endpointNumber;
+    }
+    if (this.epOut == null || this.epIn == null){
+      throw new Error('バルク転送用エンドポイントが見つかりませんでした');
+    }
+    log('USB接続完了 out=EP'+this.epOut+' in=EP'+this.epIn);
+    await this.initChipset();
+  }
+
+  async disconnect(){
+    try{
+      if (this.device){
+        await this.device.close();
+      }
+    }catch(e){ /* noop */ }
+    this.device = null;
+  }
+
+  // ---- 低レベル USB 入出力 ----
+  async usbWrite(bytes){
+    log('TX', bytesToHex(bytes));
+    await this.device.transferOut(this.epOut, bytes);
+  }
+
+  async usbReadChunk(timeoutMs){
+    const result = await Promise.race([
+      this.device.transferIn(this.epIn, 256),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('TIMEOUT')), timeoutMs))
+    ]);
+    const bytes = new Uint8Array(result.data.buffer);
+    if (bytes.length) log('RX', bytesToHex(bytes));
+    return bytes;
+  }
+
+  appendRx(bytes){
+    const merged = new Uint8Array(this.rxBuf.length + bytes.length);
+    merged.set(this.rxBuf, 0);
+    merged.set(bytes, this.rxBuf.length);
+    this.rxBuf = merged;
+  }
+
+  // バッファから1フレーム取り出す。まだ揃っていなければ null。
+  tryParseFrame(){
+    const buf = this.rxBuf;
+    if (buf.length >= 6 && buf.slice(0,6).every((v,i)=>v===ACK_FRAME[i])){
+      this.rxBuf = this.rxBuf.slice(6);
+      return { type:'ack' };
+    }
+    if (buf.length >= 8 && buf[0]===0 && buf[1]===0 && buf[2]===0xFF && buf[3]===0xFF && buf[4]===0xFF){
+      const len = buf[5] | (buf[6] << 8);
+      const total = 10 + len;
+      if (buf.length >= total){
+        const data = buf.slice(8, 8+len);
+        this.rxBuf = this.rxBuf.slice(total);
+        return { type:'data', data };
+      }
+      return null; // まだデータが揃っていない
+    }
+    if (buf.length >= 3){
+      // 想定外のバイト列。先頭1バイト捨てて再同期を試みる。
+      this.rxBuf = this.rxBuf.slice(1);
+      return null;
+    }
+    return null;
+  }
+
+  async readFrame(timeoutMs){
+    const deadline = Date.now() + timeoutMs;
+    while (true){
+      const frame = this.tryParseFrame();
+      if (frame) return frame;
+      const remain = deadline - Date.now();
+      if (remain <= 0) throw new Error('TIMEOUT');
+      const chunk = await this.usbReadChunk(Math.min(remain, 400));
+      if (chunk.length) this.appendRx(chunk);
+    }
+  }
+
+  buildDataFrame(payload){
+    const len = payload.length;
+    const lenLow = len & 0xFF, lenHigh = (len >> 8) & 0xFF;
+    const lcs = (0x100 - ((lenLow + lenHigh) & 0xFF)) & 0xFF;
+    let sum = 0; for (const b of payload) sum = (sum + b) & 0xFF;
+    const dcs = (0x100 - sum) & 0xFF;
+    const out = new Uint8Array(8 + len + 2);
+    out.set([0x00,0x00,0xFF,0xFF,0xFF, lenLow, lenHigh, lcs], 0);
+    out.set(payload, 8);
+    out.set([dcs, 0x00], 8+len);
+    return out;
+  }
+
+  async sendCommand(cmdCode, paramBytes, timeoutMs=1500){
+    const payload = new Uint8Array(2 + paramBytes.length);
+    payload[0] = 0xD6; payload[1] = cmdCode; payload.set(paramBytes, 2);
+    await this.usbWrite(this.buildDataFrame(payload));
+    const ack = await this.readFrame(timeoutMs);
+    if (ack.type !== 'ack') throw new Error('ACKが返りませんでした');
+    const rsp = await this.readFrame(timeoutMs);
+    if (rsp.type !== 'data') throw new Error('応答データがありません');
+    if (rsp.data[0] !== 0xD7 || rsp.data[1] !== cmdCode + 1){
+      throw new Error('想定外の応答コード: ' + bytesToHex(rsp.data.slice(0,2)));
+    }
+    return rsp.data.slice(2);
+  }
+
+  async initChipset(){
+    // ソフトリセットとしてACKを送る
+    await this.usbWrite(ACK_FRAME);
+    // 前セッションの残骸を読み捨てる
+    this.rxBuf = new Uint8Array(0);
+    try{
+      while (true){
+        const chunk = await this.usbReadChunk(80);
+        if (!chunk.length) break;
+      }
+    }catch(e){ /* タイムアウトで正常終了 */ }
+
+    await this.sendCommand(CMD.SetCommandType, Uint8Array.of(1));
+    const fw = await this.sendCommand(CMD.GetFirmwareVersion, Uint8Array.of());
+    log('ファームウェアバージョン', bytesToHex(fw));
+    await this.sendCommand(CMD.GetPDDataVersion, Uint8Array.of());
+    await this.sendCommand(CMD.SwitchRF, Uint8Array.of(0)); // off
+  }
+
+  // FeliCa (Type F, 212kbps) のポーリングを1回行い、応答があればIDmを返す。
+  // 何も無ければ null を返す(エラーではない = タグが無い状態)。
+  async pollFelica(){
+    // In Set RF: 212F/212F
+    await this.sendCommand(CMD.InSetRF, Uint8Array.of(1,1,15,1));
+
+    // In Set Protocol: デフォルト設定を流し込む
+    const defaults = hexToBytes(
+      '0018 0101 0201 0300 0400 0500 0600 0708 0800 0900' +
+      '0A00 0B00 0C00 0E04 0F00 1000 1100 1200 1306'.replace(/\s/g,'')
+    );
+    await this.sendCommand(CMD.InSetProtocol, defaults);
+    // initial_guard_time (key=0x00) を 24 に設定
+    await this.sendCommand(CMD.InSetProtocol, Uint8Array.of(0x00, 24));
+
+    // SENSF_REQ (システムコード指定なし = 0xFFFF で全カード応答)
+    const sensfReq = hexToBytes('00FFFF0100');
+    const frame = new Uint8Array(1 + sensfReq.length);
+    frame[0] = sensfReq.length + 1;
+    frame.set(sensfReq, 1);
+
+    // in_comm_rf のタイムアウトパラメータ(RC-S380独自の単位変換)
+    const rawTimeout = Math.min((10 + 1) * 10, 0xFFFF);
+    const commData = new Uint8Array(2 + frame.length);
+    commData[0] = rawTimeout & 0xFF;
+    commData[1] = (rawTimeout >> 8) & 0xFF;
+    commData.set(frame, 2);
+
+    let resp;
+    try{
+      resp = await this.sendCommand(CMD.InCommRF, commData, 800);
+    }catch(e){
+      log('poll error', e.message);
+      return null;
+    }
+
+    // 先頭4バイトがステータス(0,0,0,0以外はエラー/タイムアウト = カード無し)
+    if (resp.length < 5 || !(resp[0]===0 && resp[1]===0 && resp[2]===0 && resp[3]===0)){
+      return null;
+    }
+    const sensfRes = resp.slice(5); // [len, respCode(1), IDm(8), PMm(8), ...]
+    if (sensfRes.length < 18 || sensfRes[0] !== sensfRes.length || sensfRes[1] !== 0x01){
+      return null;
+    }
+    const idm = sensfRes.slice(2, 10);
+    return bytesToHex(idm);
+  }
+}
+
+/* =========================================================================
+   3. アプリのUIロジック
+   ========================================================================= */
+
+const reader = new RCS380();
+let connected = false;
+let currentMode = 'register';
+let presentIdm = null;   // 今かざされている(接触が続いている)タグ。無ければnull
+let pollTimer = null;
+
+const connectBtn = document.getElementById('connectBtn');
+const connPill = document.getElementById('connPill');
+const connLabel = document.getElementById('connLabel');
+
+connectBtn.addEventListener('click', async () => {
+  if (!('usb' in navigator)){
+    alert('このブラウザはWebUSBに対応していません。Android/Chrome か PC版Chrome/Edgeでお試しください。');
+    return;
+  }
+  connectBtn.disabled = true;
+  connectBtn.textContent = '接続中…';
+  try{
+    await reader.connect();
+    connected = true;
+    connPill.className = 'conn-pill on';
+    connLabel.textContent = 'PaSoRi 接続中';
+    connectBtn.textContent = '切断';
+    connectBtn.disabled = false;
+    startPolling();
+  }catch(e){
+    log('接続エラー', e.message);
+    alert('接続に失敗しました: ' + e.message);
+    connectBtn.textContent = '接続';
+    connectBtn.disabled = false;
+  }
+});
+
+function startPolling(){
+  if (pollTimer) return;
+  pollTimer = setInterval(async () => {
+    if (!connected) return;
+    let idm = null;
+    try{
+      idm = await reader.pollFelica();
+    }catch(e){
+      log('polling loop error', e.message);
+    }
+    if (idm){
+      if (idm !== presentIdm){
+        presentIdm = idm;
+        handleTagRead(idm);
+      }
+    } else {
+      presentIdm = null; // タグが離れた
+    }
+  }, 350);
+}
+
+/* ---- タブ切り替え ---- */
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    currentMode = tab.dataset.mode;
+    document.getElementById('panel-register').classList.toggle('active', currentMode==='register');
+    document.getElementById('panel-lend').classList.toggle('active', currentMode==='lend');
+  });
+});
+
+/* ---- 手入力(PaSoRiが無い/接続できない時のテスト用) ---- */
+document.getElementById('manualRegBtn').addEventListener('click', () => {
+  const v = document.getElementById('manualIdmReg').value.trim();
+  if (v) handleTagRead(v.toUpperCase());
+});
+document.getElementById('manualLendBtn').addEventListener('click', () => {
+  const v = document.getElementById('manualIdmLend').value.trim();
+  if (v) handleTagRead(v.toUpperCase());
+});
+
+/* ---- タグが読めた時の分岐 ---- */
+function handleTagRead(idm){
+  log('read', idm, 'mode=' + currentMode);
+  if (currentMode === 'register'){
+    showRegisterResult(idm);
+  } else {
+    showLendResult(idm);
+  }
+}
+
+/* ---- 登録画面 ---- */
+const regScanCard = document.getElementById('regScanCard');
+const regStatus = document.getElementById('regStatus');
+const regMain = document.getElementById('regMain');
+const regIdm = document.getElementById('regIdm');
+const regForm = document.getElementById('regForm');
+const regNameInput = document.getElementById('regNameInput');
+const regSaveBtn = document.getElementById('regSaveBtn');
+let regPendingIdm = null;
+
+function showRegisterResult(idm){
+  regPendingIdm = idm;
+  regScanCard.className = 'scan-card state-ok';
+  regIdm.textContent = 'IDm: ' + idm;
+  const existing = games[idm];
+  if (existing){
+    regStatus.textContent = '登録済みのタグです(名前を変更できます)';
+    regMain.textContent = existing.name;
+    regNameInput.value = existing.name;
+  } else {
+    regStatus.textContent = '新しいタグです。名前を登録してください';
+    regMain.textContent = '(未登録)';
+    regNameInput.value = '';
+  }
+  regForm.style.display = 'flex';
+  regNameInput.focus();
+}
+
+regSaveBtn.addEventListener('click', () => {
+  if (!regPendingIdm) return;
+  const name = regNameInput.value.trim();
+  if (!name){ regNameInput.focus(); return; }
+  games[regPendingIdm] = { name };
+  saveGames(games);
+  regMain.textContent = name;
+  regStatus.textContent = '登録しました';
+  renderGameList();
+});
+
+function renderGameList(){
+  const list = document.getElementById('gameList');
+  const ids = Object.keys(games);
+  document.getElementById('gameCount').textContent = ids.length;
+  if (ids.length === 0){
+    list.innerHTML = '<div class="empty">まだ何も登録されていません</div>';
+    return;
+  }
+  list.innerHTML = '';
+  ids.forEach(idm => {
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.innerHTML = `
+      <div class="row-main">
+        <div class="row-name">${escapeHtml(games[idm].name)}</div>
+        <div class="row-sub">${idm}</div>
+      </div>
+      <button class="ghost danger" data-idm="${idm}">削除</button>
+    `;
+    row.querySelector('button').addEventListener('click', () => {
+      if (confirm(games[idm].name + ' の登録を削除しますか?')){
+        delete games[idm];
+        saveGames(games);
+        renderGameList();
+      }
+    });
+    list.appendChild(row);
+  });
+}
+
+/* ---- 貸出・返却画面 ---- */
+const lendScanCard = document.getElementById('lendScanCard');
+const lendStatus = document.getElementById('lendStatus');
+const lendMain = document.getElementById('lendMain');
+const lendIdm = document.getElementById('lendIdm');
+
+function showLendResult(idm){
+  lendIdm.textContent = 'IDm: ' + idm;
+  const game = games[idm];
+  if (!game){
+    lendScanCard.className = 'scan-card state-unknown';
+    lendStatus.textContent = '未登録のタグです';
+    lendMain.textContent = 'まず「タグ登録」で名前を登録してください';
+    return;
+  }
+  if (loans[idm]){
+    // 貸出中 → 返却
+    delete loans[idm];
+    saveLoans(loans);
+    lendScanCard.className = 'scan-card state-return';
+    lendStatus.textContent = '返却されました';
+    lendMain.textContent = game.name;
+  } else {
+    // 未貸出 → 貸出
+    loans[idm] = { borrowedAt: new Date().toISOString() };
+    saveLoans(loans);
+    lendScanCard.className = 'scan-card state-lend';
+    lendStatus.textContent = '貸し出しました';
+    lendMain.textContent = game.name;
+  }
+  renderLoanList();
+}
+
+function renderLoanList(){
+  const list = document.getElementById('loanList');
+  const ids = Object.keys(loans);
+  document.getElementById('loanCount').textContent = ids.length;
+  if (ids.length === 0){
+    list.innerHTML = '<div class="empty">現在貸し出し中のゲームはありません</div>';
+    return;
+  }
+  list.innerHTML = '';
+  ids.sort((a,b) => new Date(loans[a].borrowedAt) - new Date(loans[b].borrowedAt));
+  ids.forEach(idm => {
+    const name = games[idm] ? games[idm].name : '(名称不明: ' + idm + ')';
+    const when = new Date(loans[idm].borrowedAt);
+    const row = document.createElement('div');
+    row.className = 'row on-loan';
+    row.innerHTML = `
+      <div class="row-main">
+        <div class="row-name">${escapeHtml(name)}</div>
+        <div class="row-time">${when.toLocaleString('ja-JP')} 〜</div>
+      </div>
+      <span class="badge red">貸出中</span>
+      <button class="ghost" data-idm="${idm}">返却</button>
+    `;
+    row.querySelector('button').addEventListener('click', () => {
+      delete loans[idm];
+      saveLoans(loans);
+      renderLoanList();
+    });
+    list.appendChild(row);
+  });
+}
+
+function escapeHtml(s){
+  const div = document.createElement('div');
+  div.textContent = s;
+  return div.innerHTML;
+}
+
+/* 初期描画 */
+renderGameList();
+renderLoanList();
+</script>
+</body>
+</html>
