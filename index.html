@@ -151,6 +151,12 @@
     <p>PaSoRi S380 を USB-OTG でスマホに接続してから押してください。ブラウザにデバイス選択画面が出ます。</p>
     <button class="primary" id="connectBtn">接続</button>
   </div>
+  <details class="manual" style="margin-top:-10px; margin-bottom:16px;">
+    <summary>PaSoRiが見つからない時: 全USBデバイスを見る(デバッグ)</summary>
+    <div class="manual-body">
+      <button class="ghost" id="debugListBtn">フィルタなしで一覧表示</button>
+    </div>
+  </details>
 
   <!-- 登録モード -->
   <div class="panel active" id="panel-register">
@@ -325,8 +331,9 @@ class RCS380 {
       this.device.transferIn(this.epIn, 256),
       new Promise((_, rej) => setTimeout(() => rej(new Error('TIMEOUT')), timeoutMs))
     ]);
-    const bytes = new Uint8Array(result.data.buffer);
-    if (bytes.length) log('RX', bytesToHex(bytes));
+    if (!result.data || result.data.byteLength === 0) return new Uint8Array(0);
+    const bytes = new Uint8Array(result.data.buffer, result.data.byteOffset, result.data.byteLength);
+    log('RX', bytesToHex(bytes), '(status=' + result.status + ')');
     return bytes;
   }
 
@@ -338,26 +345,27 @@ class RCS380 {
   }
 
   // バッファから1フレーム取り出す。まだ揃っていなければ null。
+  // ゴミバイトが混ざっている場合は、追加のUSB読み込みを挟まずバッファ内で
+  // 再同期できるところまで一気に読み進める。
   tryParseFrame(){
-    const buf = this.rxBuf;
-    if (buf.length >= 6 && buf.slice(0,6).every((v,i)=>v===ACK_FRAME[i])){
-      this.rxBuf = this.rxBuf.slice(6);
-      return { type:'ack' };
-    }
-    if (buf.length >= 8 && buf[0]===0 && buf[1]===0 && buf[2]===0xFF && buf[3]===0xFF && buf[4]===0xFF){
-      const len = buf[5] | (buf[6] << 8);
-      const total = 10 + len;
-      if (buf.length >= total){
+    while (this.rxBuf.length > 0){
+      const buf = this.rxBuf;
+      if (buf.length >= 6 && buf.slice(0,6).every((v,i)=>v===ACK_FRAME[i])){
+        this.rxBuf = this.rxBuf.slice(6);
+        return { type:'ack' };
+      }
+      if (buf[0]===0 && buf[1]===0 && buf[2]===0xFF && buf[3]===0xFF && buf[4]===0xFF){
+        if (buf.length < 8) return null; // 長さバイトがまだ届いていない
+        const len = buf[5] | (buf[6] << 8);
+        const total = 10 + len;
+        if (buf.length < total) return null; // データがまだ全部揃っていない
         const data = buf.slice(8, 8+len);
         this.rxBuf = this.rxBuf.slice(total);
         return { type:'data', data };
       }
-      return null; // まだデータが揃っていない
-    }
-    if (buf.length >= 3){
-      // 想定外のバイト列。先頭1バイト捨てて再同期を試みる。
+      if (buf.length < 6) return null; // ACK/DATAどちらの判定にもまだ足りない
+      // ACKにもDATAヘッダにも一致しない先頭バイトを捨てて再同期を試みる
       this.rxBuf = this.rxBuf.slice(1);
-      return null;
     }
     return null;
   }
@@ -392,9 +400,15 @@ class RCS380 {
     payload[0] = 0xD6; payload[1] = cmdCode; payload.set(paramBytes, 2);
     await this.usbWrite(this.buildDataFrame(payload));
     const ack = await this.readFrame(timeoutMs);
-    if (ack.type !== 'ack') throw new Error('ACKが返りませんでした');
+    if (ack.type !== 'ack'){
+      log('期待外の応答(ACK待ち)', JSON.stringify(ack));
+      throw new Error('ACKが返りませんでした(実際は type=' + ack.type + ')');
+    }
     const rsp = await this.readFrame(timeoutMs);
-    if (rsp.type !== 'data') throw new Error('応答データがありません');
+    if (rsp.type !== 'data'){
+      log('期待外の応答(DATA待ち)', JSON.stringify(rsp));
+      throw new Error('応答データがありません(実際は type=' + rsp.type + ')');
+    }
     if (rsp.data[0] !== 0xD7 || rsp.data[1] !== cmdCode + 1){
       throw new Error('想定外の応答コード: ' + bytesToHex(rsp.data.slice(0,2)));
     }
@@ -503,6 +517,30 @@ connectBtn.addEventListener('click', async () => {
     alert('接続に失敗しました: ' + e.message);
     connectBtn.textContent = '接続';
     connectBtn.disabled = false;
+  }
+});
+
+document.getElementById('debugListBtn').addEventListener('click', async () => {
+  if (!('usb' in navigator)){
+    alert('このブラウザはWebUSBに対応していません。');
+    return;
+  }
+  try{
+    const device = await navigator.usb.requestDevice({ filters: [] });
+    const vid = '0x' + device.vendorId.toString(16).padStart(4,'0');
+    const pid = '0x' + device.productId.toString(16).padStart(4,'0');
+    const info = `${device.productName || '(名称不明)'} / VID=${vid} PID=${pid} / ${device.manufacturerName || ''}`;
+    log('デバッグ選択', info);
+    const isPasori = device.vendorId === RCS380_VENDOR_ID && RCS380_PRODUCT_IDS.includes(device.productId);
+    alert(
+      '選択されたデバイス:\n' + info + '\n\n' +
+      (isPasori
+        ? 'PaSoRi S380 として認識できるIDです。上の「接続」ボタンで進めてください。'
+        : 'このIDはPaSoRi S380(VID 0x054c / PID 0x06c1,0x06c3)とは一致しません。ハブや別のUSB機器を拾っている可能性があります。')
+    );
+  }catch(e){
+    log('デバッグ選択エラー', e.message);
+    alert('一覧に何も表示されませんでした(' + e.message + ')。\nハブ経由でPaSoRi自体がAndroidに認識されていない可能性が高いです。');
   }
 });
 
