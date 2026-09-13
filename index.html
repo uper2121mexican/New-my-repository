@@ -399,16 +399,19 @@ class RCS380 {
     const payload = new Uint8Array(2 + paramBytes.length);
     payload[0] = 0xD6; payload[1] = cmdCode; payload.set(paramBytes, 2);
     await this.usbWrite(this.buildDataFrame(payload));
-    const ack = await this.readFrame(timeoutMs);
-    if (ack.type !== 'ack'){
-      log('期待外の応答(ACK待ち)', JSON.stringify(ack));
-      throw new Error('ACKが返りませんでした(実際は type=' + ack.type + ')');
+
+    // 通常はACKフレーム→DATAフレームの順で届くが、機体/環境によっては
+    // ACKフレームが省略されていきなりDATAフレームが届くことがあるため、
+    // 最初のフレームがACKならもう1つ読み、DATAならそのまま使う。
+    let frame = await this.readFrame(timeoutMs);
+    if (frame.type === 'ack'){
+      frame = await this.readFrame(timeoutMs);
     }
-    const rsp = await this.readFrame(timeoutMs);
-    if (rsp.type !== 'data'){
-      log('期待外の応答(DATA待ち)', JSON.stringify(rsp));
-      throw new Error('応答データがありません(実際は type=' + rsp.type + ')');
+    if (frame.type !== 'data'){
+      log('期待外の応答(DATA待ち)', JSON.stringify(frame));
+      throw new Error('応答データがありません(実際は type=' + frame.type + ')');
     }
+    const rsp = frame;
     if (rsp.data[0] !== 0xD7 || rsp.data[1] !== cmdCode + 1){
       throw new Error('想定外の応答コード: ' + bytesToHex(rsp.data.slice(0,2)));
     }
